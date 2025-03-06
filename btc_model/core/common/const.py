@@ -147,12 +147,40 @@ class OrderStatus(Enum):
     """
     Order status.
     """
+    NONE = "NONE"
     SUBMITTING = "SUBMITTING"
-    NOTTRADED = "NOTTRADED"
-    PARTTRADED = "PARTTRADED"
-    ALLTRADED = "ALLTRADED"
+    SUBMITTED = "SUBMITTED"
+    CANCELING = "CANCELING"
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"
+    FILLED = "FILLED"
+    PARTIAL_FILLED = "PARTIAL_FILLED"
+
+    @property
+    def is_pending(self) -> bool:
+        """挂单状态"""
+        return self in {OrderStatus.SUBMITTING, 
+                        OrderStatus.SUBMITTED, 
+                        OrderStatus.CANCELING}
+    
+    @property
+    def is_finished(self) -> bool:
+        """成交状态"""
+        return self in {OrderStatus.FILLED, 
+                        OrderStatus.PARTIAL_FILLED,
+                        OrderStatus.CANCELLED,
+                        OrderStatus.REJECTED}
+    
+    @property
+    def is_failed(self) -> bool:
+        """失败状态"""
+        return self in {OrderStatus.REJECTED}
+    
+    @property
+    def is_canceled(self) -> bool:
+        """取消状态"""
+        return self in {OrderStatus.CANCELLED}
+        
 
 ACTIVE_ORDER_STATUSES = set([OrderStatus.SUBMITTING, 
                              OrderStatus.NOTTRADED, 

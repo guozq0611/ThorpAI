@@ -4,38 +4,30 @@ from decimal import Decimal
 import numpy as np
 
 from btc_model.setting.setting import get_settings
+from btc_model.core.common.singleton import Singleton
+
 
 class CryptoUtil:
     """
     加密货币工具类
     """
-
-    __instance = None
-
-    def __init__(self):
-        """初始化"""
-
-
-    @classmethod
-    def get_instance(cls):
-        if cls.__instance is None:
-            cls.__instance = cls()
-
-        return cls.__instance
-
-    def get_crypto_currency_list(self, exchange: ccxt.Exchange):
+    @staticmethod
+    def get_crypto_currency_list(exchange: ccxt.Exchange):
         """获取加密货币列表"""
         return exchange.load_markets()
 
-    def get_ticker(self, exchange: ccxt.Exchange, symbol: str):
+    @staticmethod
+    def get_ticker(exchange: ccxt.Exchange, symbol: str):
         """获取加密货币ticker"""
         return exchange.fetch_ticker(symbol)
 
-    def get_last_price(self, exchange: ccxt.Exchange, symbol: str):
+    @staticmethod
+    def get_last_price(exchange: ccxt.Exchange, symbol: str):
         """获取加密货币最新价格"""
         return exchange.fetch_ticker(symbol)['last']
 
-    def get_ohlcv(self, exchange: ccxt.Exchange, symbol: str, timeframe: str = '1d', 
+    @staticmethod
+    def get_ohlcv(exchange: ccxt.Exchange, symbol: str, timeframe: str = '1d', 
                   since: int = None, limit: int = None) -> List:
         """
         获取K线数据
@@ -71,8 +63,8 @@ class CryptoUtil:
             print(f"获取K线数据失败: {str(e)}")
             return []
 
+    @staticmethod
     def withdraw(
-        self,
         exchange: ccxt.Exchange,
         currency: str,
         amount: float,
@@ -126,7 +118,8 @@ class CryptoUtil:
         except ccxt.ExchangeError as e:
             raise Exception(f"提现失败: {str(e)}")
             
-    def get_withdraw_status(self, exchange: ccxt.Exchange, currency: str, withdraw_id: str) -> Dict:
+    @staticmethod
+    def get_withdraw_status(exchange: ccxt.Exchange, currency: str, withdraw_id: str) -> Dict:
         """
         查询提现状态
         
@@ -147,7 +140,8 @@ class CryptoUtil:
         except ccxt.ExchangeError as e:
             raise Exception(f"查询提现状态失败: {str(e)}")
 
-    def get_trading_fees(self, exchange: ccxt.Exchange) -> Dict:
+    @staticmethod
+    def get_trading_fees(exchange: ccxt.Exchange) -> Dict:
         """
         获取交易对的交易费率
         考虑交易费率相对固定，用户可以自行设置费率，所以这里直接从设置中获取费率
@@ -181,7 +175,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"获取费率失败: {str(e)}")
             
-    def get_withdrawal_fees(self, exchange: ccxt.Exchange, currencies: List[str] = None) -> Dict:
+    @staticmethod
+    def get_withdrawal_fees(exchange: ccxt.Exchange, currencies: List[str] = None) -> Dict:
         """
         获取提现手续费费率
         
@@ -265,7 +260,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"获取提现费率失败: {str(e)}")
 
-    def get_trading_limits(self, exchange: ccxt.Exchange, symbol: str) -> Dict:
+    @staticmethod
+    def get_trading_limits(exchange: ccxt.Exchange, symbol: str) -> Dict:
         """
         获取交易对的最小交易数量和金额限制
         
@@ -319,7 +315,8 @@ class CryptoUtil:
         except KeyError as e:
             raise Exception(f"交易对 {symbol} 不存在或数据结构异常: {str(e)}")
             
-    def validate_order(self, exchange: ccxt.Exchange, symbol: str, amount: float, price: float = None) -> bool:
+    @staticmethod
+    def validate_order(exchange: ccxt.Exchange, symbol: str, amount: float, price: float = None) -> bool:
         """
         验证订单是否满足最小交易限制
         
@@ -333,7 +330,7 @@ class CryptoUtil:
             bool: 是否满足限制
         """
         try:
-            limits = self.get_trading_limits(exchange, symbol)
+            limits = CryptoUtil.get_trading_limits(exchange, symbol)
             
             # 检查数量限制
             if limits['amount']['min'] and amount < limits['amount']['min']:
@@ -363,7 +360,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"验证订单失败: {str(e)}")
 
-    def get_price_tick(self, exchange: ccxt.Exchange, symbol: str) -> Dict:
+    @staticmethod
+    def get_price_tick(exchange: ccxt.Exchange, symbol: str) -> Dict:
         """
         获取交易对的价格跳点信息
         
@@ -407,7 +405,8 @@ class CryptoUtil:
         except ccxt.ExchangeError as e:
             raise Exception(f"获取价格跳点失败: {str(e)}")
             
-    def format_price(self, exchange: ccxt.Exchange, symbol: str, price: float) -> float:
+    @staticmethod
+    def format_price(exchange: ccxt.Exchange, symbol: str, price: float) -> float:
         """
         将价格格式化为符合跳点要求的有效价格
         
@@ -420,7 +419,7 @@ class CryptoUtil:
             float: 格式化后的价格
         """
         try:
-            tick_info = self.get_price_tick(exchange, symbol)
+            tick_info = CryptoUtil.get_price_tick(exchange, symbol)
             tick_size = tick_info['tick_size']
             
             # 将价格调整到最近的有效价格
@@ -435,7 +434,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"价格格式化失败: {str(e)}")
 
-    def get_perpetual_markets(self, exchange: ccxt.Exchange) -> Dict:
+    @staticmethod
+    def get_perpetual_markets(exchange: ccxt.Exchange) -> Dict:
         """
         获取交易所的永续合约列表
         
@@ -508,7 +508,8 @@ class CryptoUtil:
         except ccxt.ExchangeError as e:
             raise Exception(f"获取永续合约列表失败: {str(e)}")
             
-    def get_funding_rate(self, exchange: ccxt.Exchange, symbol: str) -> Dict:
+    @staticmethod
+    def get_funding_rate(exchange: ccxt.Exchange, symbol: str) -> Dict:
         """
         获取合约的资金费率信息
         """
@@ -523,7 +524,8 @@ class CryptoUtil:
         except:
             return {}
             
-    def get_position_risk(self, exchange: ccxt.Exchange, symbol: str, 
+    @staticmethod
+    def get_position_risk(exchange: ccxt.Exchange, symbol: str, 
                          leverage: float, margin_mode: str = 'isolated') -> Dict:
         """
         计算合约仓位风险
@@ -578,7 +580,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"计算仓位风险失败: {str(e)}")
 
-    def compare_currency_info(self, exchange_a: ccxt.Exchange, exchange_b: ccxt.Exchange) -> Dict:
+    @staticmethod
+    def compare_currency_info(exchange_a: ccxt.Exchange, exchange_b: ccxt.Exchange) -> Dict:
         """
         比较两个交易所的币种信息，找出同名但可能不同的币种
         
@@ -628,8 +631,8 @@ class CryptoUtil:
                 currency_b = currencies_b[symbol]
                 
                 # 获取币种在两个交易所的网络信息
-                networks_a = self._get_currency_networks(currency_a)
-                networks_b = self._get_currency_networks(currency_b)
+                networks_a = CryptoUtil._get_currency_networks(currency_a)
+                networks_b = CryptoUtil._get_currency_networks(currency_b)
                 
                 # 检查网络支持是否不同
                 if networks_a != networks_b:
@@ -640,18 +643,18 @@ class CryptoUtil:
                     })
                 
                 # 检查可疑的同名不同币
-                if self._is_suspicious_currency(currency_a, currency_b, networks_a, networks_b):
+                if CryptoUtil._is_suspicious_currency(currency_a, currency_b, networks_a, networks_b):
                     suspicious_pairs.append({
                         'symbol': symbol,
                         'exchange_a': {
                             'name': currency_a.get('name'),
                             'network': networks_a,
-                            'contract': self._get_contract_addresses(currency_a)
+                            'contract': CryptoUtil._get_contract_addresses(currency_a)
                         },
                         'exchange_b': {
                             'name': currency_b.get('name'),
                             'network': networks_b,
-                            'contract': self._get_contract_addresses(currency_b)
+                            'contract': CryptoUtil._get_contract_addresses(currency_b)
                         }
                     })
             
@@ -729,7 +732,8 @@ class CryptoUtil:
             
         return False
         
-    def analyze_currency_risk(self, exchange_a: ccxt.Exchange, exchange_b: ccxt.Exchange, 
+    @staticmethod
+    def analyze_currency_risk(exchange_a: ccxt.Exchange, exchange_b: ccxt.Exchange, 
                             symbol: str, timeframe: str = '1d', limit: int = 30) -> Dict:
         """
         分析两个交易所同名币种的风险等级
@@ -768,29 +772,29 @@ class CryptoUtil:
             ohlcv_b = exchange_b.fetch_ohlcv(symbol, timeframe, limit=limit)
             
             # 2. 分析价格差异
-            price_analysis = self._analyze_price_difference(ohlcv_a, ohlcv_b)
+            price_analysis = CryptoUtil._analyze_price_difference(ohlcv_a, ohlcv_b)
             risk_factors['price_deviation'] = price_analysis['risk_score']
             
             if price_analysis['risk_score'] > 0.7:
                 recommendations.append(f"警告: 交易所间价格差异显著 (偏离度: {price_analysis['max_spread']:.2%})")
             
             # 3. 分析成交量差异
-            volume_analysis = self._analyze_volume_difference(ohlcv_a, ohlcv_b)
+            volume_analysis = CryptoUtil._analyze_volume_difference(ohlcv_a, ohlcv_b)
             risk_factors['volume_deviation'] = volume_analysis['risk_score']
             
             if volume_analysis['risk_score'] > 0.7:
                 recommendations.append("警告: 交易所间成交量差异过大，可能存在流动性风险")
             
             # 4. 分析网络支持情况
-            currency_info = self.compare_currency_info(exchange_a, exchange_b)
-            network_risk = self._analyze_network_risk(currency_info, symbol)
+            currency_info = CryptoUtil.compare_currency_info(exchange_a, exchange_b)
+            network_risk = CryptoUtil._analyze_network_risk(currency_info, symbol)
             risk_factors['network_risk'] = network_risk['risk_score']
             
             if network_risk['risk_score'] > 0.5:
                 recommendations.append(f"注意: {network_risk['warning']}")
             
             # 5. 计算综合风险等级
-            risk_level = self._calculate_risk_level(risk_factors)
+            risk_level = CryptoUtil._calculate_risk_level(risk_factors)
             
             return {
                 'risk_level': risk_level,
@@ -802,7 +806,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"风险分析失败: {str(e)}")
             
-    def _analyze_price_difference(self, ohlcv_a: List, ohlcv_b: List) -> Dict:
+    @staticmethod
+    def _analyze_price_difference(ohlcv_a: List, ohlcv_b: List) -> Dict:
         """分析价格差异"""
         # 提取收盘价
         prices_a = np.array([x[4] for x in ohlcv_a])
@@ -830,7 +835,8 @@ class CryptoUtil:
             )
         }
         
-    def _analyze_volume_difference(self, ohlcv_a: List, ohlcv_b: List) -> Dict:
+    @staticmethod
+    def _analyze_volume_difference(ohlcv_a: List, ohlcv_b: List) -> Dict:
         """分析成交量差异"""
         # 提取成交量
         volume_a = np.array([x[5] for x in ohlcv_a])
@@ -912,7 +918,8 @@ class CryptoUtil:
         else:
             return 5
         
-    def analyze_funding_history(self, exchange: ccxt.Exchange, symbol: str, 
+    @staticmethod
+    def analyze_funding_history(exchange: ccxt.Exchange, symbol: str, 
                               limit: int = 30) -> Dict:
         """
         分析合约历史资金费率
@@ -989,7 +996,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"分析资金费率失败: {str(e)}")
             
-    def analyze_market_depth(self, exchange: ccxt.Exchange, symbol: str, 
+    @staticmethod
+    def analyze_market_depth(exchange: ccxt.Exchange, symbol: str, 
                            depth: int = 20) -> Dict:
         """
         分析市场深度和流动性
@@ -1030,8 +1038,8 @@ class CryptoUtil:
             
             # 估算滑点
             target_volume = min(bid_volume, ask_volume) * 0.1  # 以10%的深度为基准
-            buy_slippage = self._estimate_slippage(asks, target_volume, 'buy')
-            sell_slippage = self._estimate_slippage(bids, target_volume, 'sell')
+            buy_slippage = CryptoUtil._estimate_slippage(asks, target_volume, 'buy')
+            sell_slippage = CryptoUtil._estimate_slippage(bids, target_volume, 'sell')
             
             # 计算流动性评分
             liquidity_score = 1 - min(1.0, (
@@ -1056,7 +1064,8 @@ class CryptoUtil:
         except Exception as e:
             raise Exception(f"分析市场深度失败: {str(e)}")
             
-    def _estimate_slippage(self, orders: np.ndarray, target_volume: float, 
+    @staticmethod
+    def _estimate_slippage(orders: np.ndarray, target_volume: float, 
                           side: str) -> float:
         """估算滑点"""
         cumulative_volume = 0
@@ -1073,7 +1082,8 @@ class CryptoUtil:
         avg_price = weighted_price / cumulative_volume if cumulative_volume > 0 else base_price
         return abs(avg_price - base_price) / base_price
         
-    def get_exchange_reputation(self, exchange_id: str) -> Dict:
+    @staticmethod
+    def get_exchange_reputation(exchange_id: str) -> Dict:
         """
         获取交易所信誉度评分
         
@@ -1152,7 +1162,8 @@ class CryptoUtil:
             'risk_level': risk_level
         }
         
-    def convert_symbol_to_contract(self, exchange: ccxt.Exchange, symbol: str) -> str:
+    @staticmethod
+    def convert_symbol_to_contract(exchange: ccxt.Exchange, symbol: str) -> str:
         """
         将现货交易对转换为对应的永续合约符号
         

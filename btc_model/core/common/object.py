@@ -42,30 +42,34 @@ class Instrument:
 
 @dataclass
 class OrderData:
+    orderid: str
     symbol: str
     exchange: Exchange
-    orderid: str
-
-    type: OrderType = OrderType.LIMIT
+    order_type: OrderType = OrderType.LIMIT
     direction: Direction = None
     offset: Offset = Offset.NONE
     price: float = 0
     volume: float = 0
-    traded: float = 0
+    volume_traded: float = 0
     status: OrderStatus = OrderStatus.SUBMITTING
     datetime: datetime.datetime = None # type: ignore
     reference: str = ""
 
+    @property
+    def volume_remaining(self) -> float:
+        """剩余挂单量"""
+        return self.volume - self.volume_traded
 
+    @property
     def is_active(self) -> bool:
         """
-        Check if the order is active.
+        检查订单是否活跃
         """
         return self.status in ACTIVE_ORDER_STATUSES
 
     def create_cancel_request(self) -> "CancelRequest":
         """
-        Create cancel request object from order.
+        创建取消请求对象
         """
         req = CancelRequest(
             orderid=self.orderid, symbol=self.symbol, exchange=self.exchange
