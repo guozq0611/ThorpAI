@@ -1,10 +1,13 @@
 from typing import Dict, List, Optional
 import threading
 import time
-import ccxt.pro as ccxtpro
+import ccxt
+import traceback
+from ccxt.base.errors import RequestTimeout, NetworkError
 
 from btc_model.core.common.const import OrderStatus
 from btc_model.core.common.object import PositionData
+from btc_model.core.util.log_util import Logger
 from btc_model.core.util.serialno_util import SerialnoUtil
 from btc_model.core.util.crypto_util import CryptoUtil
 from btc_model.core.util.crypto_hedge_util import CryptoHedgeUtil
@@ -21,9 +24,9 @@ class ArbitragePositionManager(PositionManager):
     """
     def __init__(self,
                  strategy: ExchangeArbitrageStrategy,
-                 exchange_1: ccxtpro.Exchange, 
-                 exchange_2: ccxtpro.Exchange, 
-                 hedge_exchange: ccxtpro.Exchange
+                 exchange_1: ccxt.Exchange, 
+                 exchange_2: ccxt.Exchange, 
+                 hedge_exchange: ccxt.Exchange
                  ):
         self.strategy = strategy
         self.exchange_1 = exchange_1
@@ -34,63 +37,97 @@ class ArbitragePositionManager(PositionManager):
         self.lock = threading.Lock()
         self._start_monitor()
         
+    def create_position(self, pair_key, data):
+        pass
 
-    def create_arbitrage_position(self, pair_key: tuple, data: dict) -> str:
-        """创建套利底仓"""
-        try:
-            # 获取当前盘口价格
-            # TODO: 暂时通过调用接口获取盘口价格,需要优化
-            spot_orderbook_1 = self.exchange_1.fetch_order_book(pair_key[0])
-            spot_orderbook_2 = self.exchange_2.fetch_order_book(pair_key[1])
+    def create_arbitrage_position(self, pair_key: tuple, data: dict) -> Optional[str]:
+        """创建套利仓位"""
+        max_retries = 3
+        retry_delay = 1  # 秒
+        
+        for attempt in range(max_retries):
+            try:
+                # 获取订单簿数据
+                spot_orderbook_1 = self.exchange_1.fetch_order_book(pair_key[0])
+                spot_orderbook_2 = self.exchange_2.fetch_order_book(pair_key[1])
 
-            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, pair_key[1])
-            swap_orderbook = self.hedge_exchange.fetch_order_book(contract_symbol)
+                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, pair_key[1])
+                swap_orderbook = self.hedge_exchange.fetch_order_book(contract_symbol)
 
-            # 现货多头买入，按卖1价下单
-            spot_price_1 = spot_orderbook_1['asks'][0][0] 
-            spot_price_2 = spot_orderbook_2['asks'][0][0] 
+                # 现货多头买入，按卖1价下单
+                spot_price_1 = spot_orderbook_1['asks'][0][0] 
+                spot_price_2 = spot_orderbook_2['asks'][0][0] 
 
-            # 合约空头卖出，按买1价下单
-            swap_price = swap_orderbook['bids'][0][0] 
+                # 合约空头卖出，按买1价下单
+                swap_price = swap_orderbook['bids'][0][0] 
 
-            
-            # 创建限价单
-            spot_order_1 = self.exchange_1.create_limit_buy_order(
-                pair_key[0], 
-                data['amount'],
-                spot_price_1
-            )
-            spot_order_2 = self.exchange_2.create_limit_sell_order(
-                pair_key[1],
-                data['amount'],
-                spot_price_2
-            )
-            swap_order = self.hedge_exchange.create_limit_sell_order(
-                contract_symbol,
-                data['amount'],
-                swap_price
-            )
-            
-            # 记录订单
-            order_id = SerialnoUtil.create_serial_no(prefix='arb_', length=20)
-            arb_order = ArbitrageHedgeOrder(
-                id=order_id,
-                leg_spot_1=spot_order_1,
-                leg_spot_2=spot_order_2,
-                leg_swap=swap_order,
-                pair_key=pair_key,
-                amount=data['amount']
-            )
-            
-            with self.lock:
-                self.active_orders[order_id] = arb_order
                 
-            return order_id
-            
-        except Exception as e:
-            self.strategy.logger.error(f"创建套利仓位失败: {e}")
-            self._handle_error(pair_key, data)
-            return None
+                # 创建限价单
+                spot_order_1 = self.exchange_1.create_limit_buy_order(
+                    pair_key[0], 
+                    data['amount'],
+                    spot_price_1
+                )
+                spot_order_2 = self.exchange_2.create_limit_buy_order(
+                    pair_key[1],
+                    data['amount'],
+                    spot_price_2
+                )
+                swap_order = self.hedge_exchange.create_limit_sell_order(
+                    contract_symbol,
+                    data['amount'],
+                    swap_price
+                )
+                
+                # 记录订单
+                order_id = SerialnoUtil.create_serial_no(prefix='arb_', length=20)
+                arb_order = ArbitrageHedgeOrder(
+                    id=order_id,
+                    leg_spot_1=spot_order_1,
+                    leg_spot_2=spot_order_2,
+                    leg_swap=swap_order
+                )
+
+                with self.lock:
+                    self.active_orders[order_id] = arb_order
+                    
+                return order_id
+                
+            except RequestTimeout as e:
+                error_msg = (
+                    f"创建套利仓位超时 (尝试 {attempt + 1}/{max_retries}) | "
+                    f"交易所: {self.exchange_2.id} | "
+                    f"交易对: {pair_key[1]} | "
+                    f"URL: {e.url if hasattr(e, 'url') else 'unknown'}"
+                )
+                if attempt < max_retries - 1:
+                    Logger.warning(f"{error_msg} | 将在 {retry_delay} 秒后重试")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
+                else:
+                    Logger.error(f"{error_msg} | 已达到最大重试次数")
+                    raise
+                    
+            except NetworkError as e:
+                Logger.error(
+                    f"网络错误 | "
+                    f"交易所: {self.exchange_2.id} | "
+                    f"交易对: {pair_key[1]} | "
+                    f"错误: {str(e)}"
+                )
+                raise
+                
+            except Exception as e:
+                Logger.error(
+                    f"创建套利仓位失败 | "
+                    f"交易对: {pair_key} | "
+                    f"数量: {data.get('amount')} | "
+                    f"价格: {data.get('price_a')}/{data.get('price_b')} | "
+                    f"错误类型: {e.__class__.__name__} | "
+                    f"错误信息: {str(e)} | "
+                    f"堆栈跟踪:\n{traceback.format_exc()}"
+                )
+                raise
 
     def _start_monitor(self):
         """启动订单监控线程"""
@@ -205,14 +242,66 @@ if __name__ == '__main__':
         exit(1)
 
     # 交易所初始化
-    exchange_1 = ccxtpro.binance(params)
-    exchange_2 = ccxtpro.okx(params)
-    hedge_exchange = ccxtpro.binance(params)
+    # 获取设置
+  
+    # 初始化币安交易所
+    setting = get_settings('cex.binance')
+    apikey = setting['apikey']
+    secretkey = setting['secretkey']
 
-    strategy = ExchangeArbitrageStrategy(exchange_1, exchange_2, pairs)
+    params_1 = {
+        'enableRateLimit': True,
+        'proxies': {
+            'http': get_settings('common')['proxies']['http'],                
+            'https': get_settings('common')['proxies']['http'],
+        },
+        'apiKey': apikey,          
+        'secret': secretkey,       
+        'options': {
+            'defaultType': 'spot',  # 可选：'spot', 'margin', 'future'
+        }
+    }
+    exchange_1 = ccxt.binance(params_1)
+
+
+    setting = get_settings('cex.okx')
+    apikey = setting['apikey']
+    secretkey = setting['secretkey']
+    passphrase = setting['passphrase']
+
+    # 初始化币安交易所
+    params_2 = {
+        'enableRateLimit': True,
+        'proxies': {
+            'http': get_settings('common')['proxies']['http'],                   
+            'https': get_settings('common')['proxies']['http'],  
+        },
+        'apiKey': apikey,          
+        'secret': secretkey,  
+        'password': passphrase,     
+        'options': {
+            'defaultType': 'spot',  # 可选：'spot', 'margin', 'future'
+        },
+        'headers': {
+            'x-simulated-trading': '1'
+        }
+    }
+
+    exchange_2 = ccxt.okx(params_2)
+    hedge_exchange = ccxt.binance(params_1)
+
+    exchange_1.set_sandbox_mode(True)
+    exchange_2.set_sandbox_mode(True)
+    hedge_exchange.set_sandbox_mode(True)
+    
+    strategy = ExchangeArbitrageStrategy(exchange_1=exchange_1, 
+                                         exchange_2=exchange_2, 
+                                         hedge_exchange=hedge_exchange, 
+                                         pairs=pairs
+                                        )
 
     position_manager = ArbitragePositionManager(
-        strategy=ExchangeArbitrageStrategy(),
+        strategy=strategy,
         exchange_1=exchange_1,
         exchange_2=exchange_2,
         hedge_exchange=hedge_exchange
@@ -222,5 +311,13 @@ if __name__ == '__main__':
     #     ('BTC/USDT', 'BTC/USDT'),
     #     {'amount': 0.001}
     # )   
+
+    pair_key = ('LSK/USDT', 'LSK/USDT')
+    data = {
+        'amount': 10
+    }
+    order_id = position_manager.create_arbitrage_position(pair_key, data)
+    print(order_id)
+    
     
     print('-------------------------------------------------------------------------')

@@ -11,6 +11,7 @@ from btc_model.core.util.log_util import Logger
 from btc_model.strategy.exchange_arbitrage.pairs_monitor import PairsMonitor
 from btc_model.core.common.object import PositionData
 from btc_model.trade.position_holder import PositionHolder
+from btc_model.setting.setting import get_settings
 
 
 
@@ -40,6 +41,7 @@ class SpreadOccurrenceParams(NamedTuple):
     duration: int  # 窗口时长（秒）
     min_occurrences: int  # 最小出现次数
     consecutive_required: bool  # 是否要求连续
+
 
 class RiskControlParams(NamedTuple):
     """
@@ -130,7 +132,8 @@ class ExchangeArbitrageStrategy:
 
 
     async def run_monitor(self):
-        await self.exchange_1.load_markets()
+        
+        
         await self.exchange_2.load_markets()
 
         self.pair_monitor.start()
@@ -210,14 +213,34 @@ class ExchangeArbitrageStrategy:
     def cancel_order(self, order):
         pass
 
-    def create_arbitrage_position(self, pair_key, data):
-        """创建套利底仓（现货多头 + 合约空头）"""
-        # 创建现货多头持仓
-        self.exchange_1.create_market_buy_order(pair_key[0], data['amount'])
-        # 创建永续合约空头对冲仓位
-        self.exchange_2.create_market_sell_order(pair_key[1], data['amount'])   
-        # 更新持仓数据
-        self.load_positions()
+    async def create_arbitrage_position(self, pair_key: tuple, data: dict) -> str:
+        """创建套利仓位"""
+        try:
+            # 获取订单簿数据
+            orderbook1 = await self.exchange_1.fetch_order_book(pair_key[0])
+            orderbook2 = await self.exchange_2.fetch_order_book(pair_key[1])
+            
+            # 创建限价单
+            order1 = await self.exchange_1.create_limit_buy_order(
+                pair_key[0],
+                data['amount'],
+                orderbook1['asks'][0][0]
+            )
+            
+            order2 = await self.exchange_2.create_limit_sell_order(
+                pair_key[1],
+                data['amount'],
+                orderbook2['bids'][0][0]
+            )
+            
+            # 更新持仓数据
+            await self.load_positions()
+            
+            return order1['id']  # 或返回其他标识
+            
+        except Exception as e:
+            self.logger.error(f"创建套利仓位失败: {e}")
+            return None
 
     def close_arbitrage_position(self, pair_key, data):
         """
@@ -259,15 +282,16 @@ class ExchangeArbitrageStrategy:
         if data['spread'] < spread_threshold.min_percent or data['spread'] > spread_threshold.max_percent:
             return
         
-        # 计算价差出现次数阈值
-        spread_occurrence = self.strategy_params.spread_occurrence_params
-        if data['spread'] < spread_occurrence.min_percent or data['spread'] > spread_occurrence.max_percent:
-            return
+        # TODO: 价差出现次数阈值
+        # # 计算价差出现次数阈值
+        # spread_occurrence = self.strategy_params.spread_occurrence_params
+        # if data['spread'] < spread_occurrence.min_spread or data['spread'] > spread_occurrence.max_spread:
+        #     return
         
-        # 计算风险控制阈值
-        risk_control = self.strategy_params.risk_control_params
-        if data['spread'] < risk_control.min_percent or data['spread'] > risk_control.max_percent:
-            return  
+        # # 计算风险控制阈值
+        # risk_control = self.strategy_params.risk_control_params
+        # if data['spread'] < risk_control.min_percent or data['spread'] > risk_control.max_percent:
+        #     return  
         
         # 将套利机会添加到队列中
         self.queue.put(data)
@@ -451,6 +475,49 @@ class ExchangeArbitrageStrategy:
             # 如果启用了自动交易，执行套利
             if self.settings.get('AUTO_TRADE', False):
                 await self.execute_arbitrage(pair_key, direction)
+
+    def check_spread_occurrence(self, pair_key: tuple, data: dict) -> bool:
+        """检查价差是否满足出现次数和持续时间要求"""
+        params = self.strategy_params.spread_occurrence_params
+        
+        # 检查价差是否在有效范围内
+        if not (params.min_spread <= data['spread'] <= params.max_spread):
+            return False
+        
+        # 获取历史价差数据
+        now = time.time()
+        window_start = now - params.duration
+        
+        # 从缓存中获取该交易对的历史价差记录
+        spread_history = self.spread_history.get(pair_key, [])
+        
+        # 清理过期数据
+        spread_history = [(t, s) for t, s in spread_history if t >= window_start]
+        
+        # 添加当前价差
+        spread_history.append((now, data['spread']))
+        self.spread_history[pair_key] = spread_history
+        
+        # 统计有效价差出现次数
+        valid_occurrences = sum(
+            1 for _, spread in spread_history 
+            if params.min_spread <= spread <= params.max_spread
+        )
+        
+        # 如果要求连续
+        if params.consecutive_required:
+            consecutive_count = 0
+            max_consecutive = 0
+            for _, spread in spread_history:
+                if params.min_spread <= spread <= params.max_spread:
+                    consecutive_count += 1
+                    max_consecutive = max(max_consecutive, consecutive_count)
+                else:
+                    consecutive_count = 0
+            return max_consecutive >= params.min_occurrences
+        
+        # 不要求连续，只检查总次数
+        return valid_occurrences >= params.min_occurrences
 
 
 if __name__ == "__main__":

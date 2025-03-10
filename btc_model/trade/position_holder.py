@@ -1,9 +1,9 @@
-from dataclasses import field
+from dataclasses import dataclass, field
 from typing import Dict
 
 from btc_model.core.common.object import PositionData, AccountData
 
-
+@dataclass
 class PositionHolder:
     """
     Position holder is used for tracking all positions and accounts.
@@ -51,7 +51,7 @@ class PositionHolder:
             else:
                 raise ValueError(f"当前价格中缺少仓位 {symbol} 的价格")
         return total
-        
+
     @property
     def total_position_value(self) -> float:
         """所有仓位的总价值（属性）"""
@@ -71,3 +71,7 @@ class PositionHolder:
     def _get_current_prices(self) -> Dict[str, float]:
         """获取当前价格"""
         return self._current_prices
+
+    def get_positions(self) -> Dict[str, PositionData]:
+        """获取所有仓位的字典视图"""
+        return dict(self.positions)
