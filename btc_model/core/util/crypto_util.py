@@ -62,7 +62,8 @@ class CryptoUtil:
         except Exception as e:
             print(f"获取K线数据失败: {str(e)}")
             return []
-
+        
+    
     @staticmethod
     def withdraw(
         exchange: ccxt.Exchange,

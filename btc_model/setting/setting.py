@@ -117,7 +117,40 @@ SETTINGS: Dict[str, Any] = {
     "database.port": 0,
     "database.user": "",
     "database.password": "",
-    "database.auth_source": ''
+    "database.auth_source": '',
+
+    # ------------------------------------------------------
+    # 套利策略参数
+    # ------------------------------------------------------    
+    "strategy.exchange_arbitrage.capital_limit_params": {
+        "max_amount": 100,
+        "max_trading_pairs": 10,
+        "max_amount_per_pair": 1000,
+        "min_amount_per_pair": 100,
+    },
+
+    "strategy.exchange_arbitrage.spread_threshold_params": {
+        "min_percent": 0.001,
+        "max_percent": 0.005,
+        "min_absolute": 10,
+        "max_absolute": 100,
+        "min_profit": 0.001,
+    },
+
+    "strategy.exchange_arbitrage.spread_occurrence_params": {
+        "duration": 10,
+        "min_occurrences": 10,
+        "consecutive_required": True,
+    },
+
+    "strategy.exchange_arbitrage.risk_control_params": {
+        "max_loss_limit_absolute_daily": 10,
+        "max_consecutive_loss_times": 10,
+    },
+    
+
+    
+
 }
 
 

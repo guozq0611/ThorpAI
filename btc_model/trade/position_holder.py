@@ -9,6 +9,7 @@ class PositionHolder:
     Position holder is used for tracking all positions and accounts.
     """
     positions: Dict[str, PositionData] = field(default_factory=dict)
+    _current_prices: Dict[str, float] = field(default_factory=dict)  # 存储当前价格
 
     def add_position(self, symbol: str, quantity: float, entry_price: float) -> None:
         """添加新的仓位"""
@@ -50,3 +51,23 @@ class PositionHolder:
             else:
                 raise ValueError(f"当前价格中缺少仓位 {symbol} 的价格")
         return total
+        
+    @property
+    def total_position_value(self) -> float:
+        """所有仓位的总价值（属性）"""
+        # 注意：这需要当前价格，但作为属性无法传递参数
+        # 这里假设有一个存储当前价格的属性或方法
+        current_prices = self._get_current_prices()  # 这个方法需要在类中实现
+        return self.total_value(current_prices)
+
+    def update_current_price(self, symbol: str, price: float) -> None:
+        """更新特定符号的当前价格"""
+        self._current_prices[symbol] = price
+        
+    def update_current_prices(self, prices: Dict[str, float]) -> None:
+        """批量更新当前价格"""
+        self._current_prices.update(prices)
+        
+    def _get_current_prices(self) -> Dict[str, float]:
+        """获取当前价格"""
+        return self._current_prices

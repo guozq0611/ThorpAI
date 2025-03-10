@@ -2,13 +2,17 @@ import pandas as pd
 import threading
 import queue
 import asyncio
-from typing import NamedTuple, Dict
-
+from typing import NamedTuple, Dict, Tuple, Optional
+import ccxt
+import time
 import ccxt.pro as ccxtpro
+
 from btc_model.core.util.log_util import Logger
 from btc_model.strategy.exchange_arbitrage.pairs_monitor import PairsMonitor
 from btc_model.core.common.object import PositionData
-from btc_model.core.util.crypto_util import get_position_data
+from btc_model.trade.position_holder import PositionHolder
+
+
 
 class CapitalLimitParams(NamedTuple):
     """
@@ -27,6 +31,7 @@ class SpreadThresholdParams(NamedTuple):
     max_percent: float  # 最大价差百分比（防异常）
     min_absolute: float  # 最小绝对价差（USDT）
     max_absolute: float  # 最大绝对价差（USDT）
+    min_profit: float  # 最小利润率
 
 class SpreadOccurrenceParams(NamedTuple):
     """
@@ -71,7 +76,8 @@ class ExchangeArbitrageStrategy:
                  exchange_1: ccxtpro.Exchange, 
                  exchange_2: ccxtpro.Exchange, 
                  hedge_exchange: ccxtpro.Exchange,
-                 pairs: list
+                 pairs: list,
+                 settings=None
                  ):
         """
         初始化策略
@@ -90,6 +96,9 @@ class ExchangeArbitrageStrategy:
         self.hedge_exchange = hedge_exchange
         self.pairs = pairs
 
+        self.position_holder1 = PositionHolder()
+        self.position_holder2 = PositionHolder()
+
         self.pair_monitor = PairsMonitor(self.exchange_1, self.exchange_2, self.pairs)
         self.pair_monitor.add_arbitrage_opportunity_event(self.on_arbitrage_opportunity)
 
@@ -99,6 +108,16 @@ class ExchangeArbitrageStrategy:
         # 套利机会事件列表
         self.on_arbitrage_event_list = []
         self.websocket_manager = None
+
+        # # 套利参数设置
+        # self.settings = settings or {}
+        # self.TRADE_FEE = self.settings.get('TRADE_FEE', 0.001)  # 交易手续费，默认0.1%
+        # self.TRANSFER_FEE = self.settings.get('TRANSFER_FEE', 0.001)  # 转账手续费，默认0.1%
+        # self.MIN_PROFIT = self.settings.get('MIN_PROFIT', 0.005)  # 最小利润率，默认0.5%
+        # self.MAX_SLIPPAGE = self.settings.get('MAX_SLIPPAGE', 0.002)  # 最大滑点，默认0.2%
+        # self.TRADE_AMOUNT = self.settings.get('TRADE_AMOUNT', 0.01)  # 交易数量，默认0.01BTC
+        # self.MAX_RETRIES = self.settings.get('MAX_RETRIES', 3)  # 最大重试次数
+   
 
     # def start(self):
     #     try:
@@ -135,7 +154,7 @@ class ExchangeArbitrageStrategy:
         try:
             # 刷新第一个交易所的持仓数据
             # 获取现货持仓
-            spot_balance1 = self.exchange1.fetch_balance()
+            spot_balance1 = self.exchange_1.fetch_balance()
             if spot_balance1:
                 for currency, balance in spot_balance1['total'].items():
                     if balance > 0:
@@ -146,7 +165,7 @@ class ExchangeArbitrageStrategy:
                         )
 
             # 获取永续合约持仓
-            futures_positions1 = self.exchange1.fetch_positions()
+            futures_positions1 = self.exchange_1.fetch_positions()
             if futures_positions1:
                 for position in futures_positions1:
                     if float(position['contracts']) != 0:
@@ -158,7 +177,7 @@ class ExchangeArbitrageStrategy:
 
             # 刷新第二个交易所的持仓数据
             # 获取现货持仓
-            spot_balance2 = self.exchange2.fetch_balance()
+            spot_balance2 = self.exchange_2.fetch_balance()
             if spot_balance2:
                 for currency, balance in spot_balance2['total'].items():
                     if balance > 0:
@@ -169,7 +188,7 @@ class ExchangeArbitrageStrategy:
                         )
 
             # 获取永续合约持仓
-            futures_positions2 = self.exchange2.fetch_positions()
+            futures_positions2 = self.exchange_2.fetch_positions()
             if futures_positions2:
                 for position in futures_positions2:
                     if float(position['contracts']) != 0:
@@ -274,6 +293,165 @@ class ExchangeArbitrageStrategy:
         # 实现获取价差百分比的方法
         pass
 
+    async def fetch_orderbook(self, exchange: ccxt.Exchange, symbol: str) -> Tuple[Optional[float], Optional[float]]:
+        """获取订单簿数据"""
+        for _ in range(self.MAX_RETRIES):
+            try:
+                orderbook = await exchange.fetch_order_book(symbol) if hasattr(exchange, 'fetch_order_book') else exchange.fetch_order_book(symbol)
+                if not orderbook['bids'] or not orderbook['asks']:
+                    self.logger.warning(f"Empty orderbook for {symbol} on {exchange.id}")
+                    return None, None
+                    
+                bid = orderbook['bids'][0][0]  # 最高买入价
+                ask = orderbook['asks'][0][0]  # 最低卖出价
+                return bid, ask
+            except Exception as e:
+                self.logger.error(f"Error fetching orderbook from {exchange.id}: {e}")
+                await asyncio.sleep(1)
+        return None, None
+
+    async def check_balance(self, exchange: ccxt.Exchange, asset: str, min_amount: float) -> bool:
+        """检查账户余额是否足够"""
+        try:
+            balance = await exchange.fetch_balance() if hasattr(exchange, 'fetch_balance') else exchange.fetch_balance()
+            available = balance['free'].get(asset, 0)
+            if available < min_amount:
+                self.logger.warning(f"Insufficient {asset} balance on {exchange.id}: {available} < {min_amount}")
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"Error checking balance on {exchange.id}: {e}")
+            return False
+
+    async def place_order(self, exchange: ccxt.Exchange, symbol: str, side: str, amount: float, price: float) -> bool:
+        """下单并验证执行结果"""
+        try:
+            order = await exchange.create_order(symbol, 'limit', side, amount, price) if hasattr(exchange, 'create_order') else exchange.create_order(symbol, 'limit', side, amount, price)
+            self.logger.info(f"Order placed on {exchange.id}: {side} {amount} {symbol} @ {price}")
+            
+            # 等待订单成交（简单实现，实际需异步处理）
+            await asyncio.sleep(2)
+            order_status = await exchange.fetch_order(order['id'], symbol) if hasattr(exchange, 'fetch_order') else exchange.fetch_order(order['id'], symbol)
+            if order_status['status'] == 'closed':
+                self.logger.info(f"Order executed successfully on {exchange.id}: {order_status['filled']} filled")
+                return True
+            else:
+                self.logger.warning(f"Order not fully executed on {exchange.id}: {order_status['status']}")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error placing order on {exchange.id}: {e}")
+            return False
+
+    async def calculate_arbitrage(self, pair_key):
+        """计算套利机会并返回方向"""
+        data = self.pair_data[pair_key]
+        
+        try:
+            if not data['price_a'] or not data['price_b']:
+                return 0, 0, "no_opportunity"
+                
+            # 计算 a买b卖 的套利机会
+            profit_a_to_b = (data['price_b']['bid'] * (1 - self.TRADE_FEE)) - (data['price_a']['ask'] * (1 + self.TRADE_FEE)) - (self.TRANSFER_FEE * data['price_a']['ask'])
+            
+            # 计算 b买a卖 的套利机会
+            profit_b_to_a = (data['price_a']['bid'] * (1 - self.TRADE_FEE)) - (data['price_b']['ask'] * (1 + self.TRADE_FEE)) - (self.TRANSFER_FEE * data['price_b']['ask'])
+            
+            # 计算套利方向和利润
+            if profit_a_to_b > profit_b_to_a and profit_a_to_b > self.MIN_PROFIT:
+                data['spread'] = profit_a_to_b / data['price_a']['ask']
+                data['comment'] = (
+                    f'【{self.exchange_a_name}】 买入 {data["price_a"]["ask"]}, '
+                    f'【{self.exchange_b_name}】 卖出 {data["price_b"]["bid"]}'
+                )
+                return profit_a_to_b, data['price_a']['ask'], f"{self.exchange_a_name}_to_{self.exchange_b_name}"
+            elif profit_b_to_a > self.MIN_PROFIT:
+                data['spread'] = profit_b_to_a / data['price_b']['ask']
+                data['comment'] = (
+                    f'【{self.exchange_b_name}】 买入 {data["price_b"]["ask"]}, '
+                    f'【{self.exchange_a_name}】 卖出 {data["price_a"]["bid"]}'
+                )
+                return profit_b_to_a, data['price_b']['ask'], f"{self.exchange_b_name}_to_{self.exchange_a_name}"
+            
+            # 没有套利机会
+            data['spread'] = max(profit_a_to_b, profit_b_to_a) / min(data['price_a']['ask'], data['price_b']['ask'])
+            data['comment'] = "无套利机会"
+            return 0, 0, "no_opportunity"
+        except (TypeError, ZeroDivisionError, KeyError) as e:
+            pair_key_str = '-'.join(pair_key) if isinstance(pair_key, tuple) else pair_key
+            self.logger.error(f"套利计算错误 {pair_key_str}: {str(e)}")
+            return 0, 0, "error"
+
+    async def execute_arbitrage(self, pair_key, direction):
+        """执行套利交易"""
+        data = self.pair_data[pair_key]
+        pair_str = '-'.join(pair_key) if isinstance(pair_key, tuple) else pair_key
+        
+        # 根据方向确定买卖交易所
+        if direction == f"{self.exchange_a_name}_to_{self.exchange_b_name}":
+            buy_exchange = self.exchange_1
+            sell_exchange = self.exchange_2
+            buy_price = data['price_a']['ask']
+            sell_price = data['price_b']['bid']
+        elif direction == f"{self.exchange_b_name}_to_{self.exchange_a_name}":
+            buy_exchange = self.exchange_2
+            sell_exchange = self.exchange_1
+            buy_price = data['price_b']['ask']
+            sell_price = data['price_a']['bid']
+        else:
+            self.logger.warning(f"Invalid arbitrage direction: {direction}")
+            return False
+            
+        # 检查滑点
+        current_buy_bid, current_buy_ask = await self.fetch_orderbook(buy_exchange, pair_str)
+        current_sell_bid, current_sell_ask = await self.fetch_orderbook(sell_exchange, pair_str)
+        
+        if current_buy_ask is None or current_sell_bid is None:
+            self.logger.warning("Failed to fetch current orderbook, aborting trade.")
+            return False
+            
+        if (abs(current_buy_ask - buy_price) / buy_price > self.MAX_SLIPPAGE or
+            abs(current_sell_bid - sell_price) / sell_price > self.MAX_SLIPPAGE):
+            self.logger.warning("Excessive slippage detected, aborting trade.")
+            return False
+
+        # 获取交易对的基础货币和计价货币
+        base_currency, quote_currency = pair_key
+        
+        # 检查余额
+        if not await self.check_balance(buy_exchange, quote_currency, self.TRADE_AMOUNT * buy_price):
+            return False
+        if not await self.check_balance(sell_exchange, base_currency, self.TRADE_AMOUNT):
+            return False
+
+        # 下单：买入
+        buy_success = await self.place_order(buy_exchange, pair_str, 'buy', self.TRADE_AMOUNT, buy_price)
+        if not buy_success:
+            return False
+
+        # 下单：卖出
+        sell_success = await self.place_order(sell_exchange, pair_str, 'sell', self.TRADE_AMOUNT, sell_price)
+        if not sell_success:
+            self.logger.warning("Sell order failed, manual intervention required.")
+            return False
+
+        self.logger.info(
+            f"套利交易成功: {pair_str} {direction} 价差: {data['spread']:.2%}, {data['comment']}"
+        )
+        return True
+
+    async def trigger_arbitrage(self, pair_key):
+        """触发套利信号"""
+        profit, buy_price, direction = await self.calculate_arbitrage(pair_key)
+        
+        if direction != "no_opportunity" and direction != "error":
+            self.logger.info(
+                f"套利信号触发: {pair_key} 价差: {self.pair_data[pair_key]['spread']:.2%}, {self.pair_data[pair_key]['comment']}"
+            )
+            
+            # 如果启用了自动交易，执行套利
+            if self.settings.get('AUTO_TRADE', False):
+                await self.execute_arbitrage(pair_key, direction)
+
 
 if __name__ == "__main__":
     from btc_model.setting.setting import get_settings
@@ -303,8 +481,14 @@ if __name__ == "__main__":
     # 交易所初始化
     exchange_1 = ccxtpro.binance(params)
     exchange_2 = ccxtpro.okx(params)
-    
-    strategy = ExchangeArbitrageStrategy(exchange_1, exchange_2, pairs)
+    # 对冲交易所
+    hedge_exchange = ccxtpro.binance(params)
+
+    strategy = ExchangeArbitrageStrategy(exchange_1=exchange_1, 
+                                         exchange_2=exchange_2, 
+                                         hedge_exchange=hedge_exchange, 
+                                         pairs=pairs
+                                         )
     Logger.info("跨交易所套利监控程序已启动")
     strategy.execute()
     print("程序已终止")

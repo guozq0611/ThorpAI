@@ -180,11 +180,8 @@ class OrderStatus(Enum):
     def is_canceled(self) -> bool:
         """取消状态"""
         return self in {OrderStatus.CANCELLED}
-        
+    
 
-ACTIVE_ORDER_STATUSES = set([OrderStatus.SUBMITTING, 
-                             OrderStatus.NOTTRADED, 
-                             OrderStatus.PARTTRADED])
 
 class Offset(Enum):
     """

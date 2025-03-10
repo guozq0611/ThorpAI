@@ -18,8 +18,7 @@ from btc_model.core.common.const import (InstrumentType,
                                          OrderStatus,
                                          Offset,
                                          Direction,
-                                         OrderType,
-                                         ACTIVE_ORDER_STATUSES
+                                         OrderType
                                          )
 
 @dataclass
@@ -45,14 +44,14 @@ class OrderData:
     orderid: str
     symbol: str
     exchange: Exchange
-    order_type: OrderType = OrderType.LIMIT
+    order_type: OrderType = OrderType.LIMIT_ORDER
     direction: Direction = None
     offset: Offset = Offset.NONE
     price: float = 0
     volume: float = 0
     volume_traded: float = 0
     status: OrderStatus = OrderStatus.SUBMITTING
-    datetime: datetime.datetime = None # type: ignore
+    datetime: 'datetime.datetime' = None  # 使用字符串形式的类型注解
     reference: str = ""
 
     @property
