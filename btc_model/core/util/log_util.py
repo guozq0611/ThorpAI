@@ -44,6 +44,11 @@ class Logger:
         sh.setLevel(10)  # 在屏幕显示的从30开始
 
     @staticmethod
+    def is_debug_enabled():
+        """检查是否启用了调试日志"""
+        return logging.getLogger().isEnabledFor(logging.DEBUG)
+
+    @staticmethod
     def debug(logs, ui_log=None, ui_progress=None):
         logging.debug(logs)
 
