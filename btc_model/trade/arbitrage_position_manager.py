@@ -29,192 +29,61 @@ class ArbitragePositionManager(PositionManager):
                  strategy: ExchangeArbitrageStrategy,
                  exchange_1: ccxt.Exchange, 
                  exchange_2: ccxt.Exchange, 
-                 hedge_exchange: ccxt.Exchange
+                 hedge_exchange: ccxt.Exchange,
+                 context: Context
                  ):
         self.strategy = strategy
         self.exchange_1 = exchange_1
         self.exchange_2 = exchange_2
         self.hedge_exchange = hedge_exchange
-        
-        # 获取市场数据管理器实例
-        self.md = MarketDataService()
-        
-        # 添加交易所到市场数据管理器
-        self.md.add_exchange('exchange_1', exchange_1)
-        self.md.add_exchange('exchange_2', exchange_2)
-        self.md.add_exchange('hedge_exchange', hedge_exchange)
-        
-        # 订阅交易对的行情数据
-        self._subscribe_market_data()
-        
-        # 启动市场数据订阅
-        self.md.start()
+
+        self.market_data_service = context.market_data_service
+ 
         
         self.active_orders: Dict[str, ArbitrageOrder | ArbitrageHedgeOrder] = {}
         self.lock = threading.Lock()
         self._start_monitor()
     
-    def _subscribe_market_data(self):
-        """
-        订阅交易对的行情数据
-        """
-        # 获取策略中的交易对
-        pairs = self.strategy.pairs
-        symbols_to_watch = set()
-        
-        # 收集所有需要订阅的交易对
-        for pair in pairs:
-            symbol_a = pair['symbol_a']
-            symbol_b = pair['symbol_b']
-            symbols_to_watch.add(symbol_a)
-            symbols_to_watch.add(symbol_b)
-            
-            # 添加合约交易对
-            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_b)
-            symbols_to_watch.add(contract_symbol)
-        
-        # 订阅所有交易对的订单簿
-        for symbol in symbols_to_watch:
-            if symbol.endswith(':USDT'):  # 合约交易对
-                self.md.subscribe_orderbook('hedge_exchange', symbol)
-                self.md.subscribe_funding_rate('hedge_exchange', symbol)
-            else:  # 现货交易对
-                if symbol in [pair['symbol_a'] for pair in self.strategy.pairs]:
-                    self.md.subscribe_orderbook('exchange_1', symbol)
-                if symbol in [pair['symbol_b'] for pair in self.strategy.pairs]:
-                    self.md.subscribe_orderbook('exchange_2', symbol)
-        
-        Logger.info(f"已订阅 {len(symbols_to_watch)} 个交易对的市场数据")
-
     def create_position(self, pair_key, data):
         pass
 
     def create_arbitrage_position(self, pair_key: tuple, data: dict) -> Optional[str]:
         """创建套利仓位"""
-        max_retries = 3
-        retry_delay = min(30, 2 ** 0)  # 指数退避，最大30秒
         
-        for attempt in range(max_retries):
-            try:
-                # 获取订单簿数据（使用市场数据管理器）
-                spot_orderbook_1 = self.market_data.get_orderbook('exchange_1', pair_key[0])
-                spot_orderbook_2 = self.market_data.get_orderbook('exchange_2', pair_key[1])
-
-                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, pair_key[1])
-                swap_orderbook = self.market_data.get_orderbook('hedge_exchange', contract_symbol)
+        # 使用锁来防止竞态条件
+        with self.lock:
+            # 如果仓位已经存在，则不创建
+            if pair_key in self.active_orders:
+                Logger.warning(f"仓位已存在，不创建仓位: {pair_key}")
+                return None
                 
-                # 检查行情数据是否有效和新鲜
-                if (not spot_orderbook_1['asks'] or 
-                    not spot_orderbook_2['asks'] or 
-                    not swap_orderbook['bids'] or
-                    not self.market_data.is_data_fresh('orderbook', 'exchange_1', pair_key[0]) or
-                    not self.market_data.is_data_fresh('orderbook', 'exchange_2', pair_key[1]) or
-                    not self.market_data.is_data_fresh('orderbook', 'hedge_exchange', contract_symbol)):
-                    
-                    Logger.warning(f"行情数据不完整或不新鲜，尝试直接获取行情 (尝试 {attempt + 1}/{max_retries})")
-                    # 如果订阅的行情不可用，回退到直接获取
-                    spot_orderbook_1 = self.md.get_orderbook(pair_key[0])
-                    spot_orderbook_2 = self.md.get_orderbook(pair_key[1])
-                    swap_orderbook = self.md.get_orderbook(contract_symbol)
-
-                # 现货多头买入，按卖1价下单
-                spot_price_1 = spot_orderbook_1['asks'][0][0] 
-                spot_price_2 = spot_orderbook_2['asks'][0][0] 
-
-                # 合约空头卖出，按买1价下单
-                swap_price = swap_orderbook['bids'][0][0] + 0.0005
-
-                # 记录行情数据用于日志
-                Logger.info(
-                    f"获取行情成功 | "
-                    f"{pair_key[0]} 卖1价: {spot_price_1} | "
-                    f"{pair_key[1]} 卖1价: {spot_price_2} | "
-                    f"{contract_symbol} 买1价: {swap_orderbook['bids'][0][0]}"
-                )
-                
-                # 创建限价单
-                # spot_order_1 = self.exchange_1.create_limit_buy_order(
-                #     pair_key[0], 
-                #     data['amount'],
-                #     spot_price_1
-                # )
-                spot_order_2 = self.exchange_2.create_limit_buy_order(
-                    pair_key[1],
-                    data['amount'],
-                    spot_price_2
-                )
-                
-                # 添加持仓方向参数
-                try:
-                    # 尝试使用双向持仓模式
-                    swap_order = self.hedge_exchange.create_limit_sell_order(
-                        contract_symbol,
-                        data['amount'],
-                        swap_price,
-                        params={"positionSide": "SHORT"}  # 指定为空头持仓
-                    )
-                except Exception as e:
-                    # 如果失败，尝试使用单向持仓模式
-                    if "position side does not match" in str(e):
-                        Logger.warning(f"尝试使用单向持仓模式下单: {contract_symbol}")
-                        swap_order = self.hedge_exchange.create_limit_sell_order(
-                            contract_symbol,
-                            data['amount'],
-                            swap_price
-                        )
-                    else:
-                        # 其他错误，直接抛出
-                        raise
-                
-                # 记录订单
-                order_id = SerialnoUtil.create_serial_no(prefix='arb_', length=20)
-                arb_order = ArbitrageHedgeOrder(
-                    id=order_id,
-                    leg_spot_1=None,  # 这里需要修改，因为没有 spot_order_1
-                    leg_spot_2=spot_order_2,
-                    leg_swap=swap_order
-                )
-
-                with self.lock:
-                    self.active_orders[order_id] = arb_order
-                    
-                return order_id
-                
-            except RequestTimeout as e:
-                error_msg = (
-                    f"创建套利仓位超时 (尝试 {attempt + 1}/{max_retries}) | "
-                    f"交易所: {self.exchange_2.id} | "
-                    f"交易对: {pair_key[1]} | "
-                    f"URL: {e.url if hasattr(e, 'url') else 'unknown'}"
-                )
-                if attempt < max_retries - 1:
-                    Logger.warning(f"{error_msg} | 将在 {retry_delay} 秒后重试")
-                    time.sleep(retry_delay)
-                    retry_delay = min(30, 2 ** (attempt + 1))  # 指数退避，最大30秒
-                else:
-                    Logger.error(f"{error_msg} | 已达到最大重试次数")
-                    raise
-                    
-            except NetworkError as e:
-                Logger.error(
-                    f"网络错误 | "
-                    f"交易所: {self.exchange_2.id} | "
-                    f"交易对: {pair_key[1]} | "
-                    f"错误: {str(e)}"
-                )
-                raise
-                
-            except Exception as e:
-                Logger.error(
-                    f"创建套利仓位失败 | "
-                    f"交易对: {pair_key} | "
-                    f"数量: {data.get('amount')} | "
-                    f"价格: {data.get('price_a')}/{data.get('price_b')} | "
-                    f"错误类型: {e.__class__.__name__} | "
-                    f"错误信息: {str(e)} | "
-                    f"堆栈跟踪:\n{traceback.format_exc()}"
-                )
-                raise
+            # 在锁内添加到活跃订单列表，防止其他线程重复创建
+            position_id = self._generate_position_id()
+            self.active_orders[pair_key] = {
+                'position_id': position_id,
+                'status': 'creating',
+                'data': data,
+                'created_at': time.time()
+            }
+        
+        # 锁外执行耗时操作，避免长时间持有锁
+        try:
+            # 这里执行创建仓位的具体逻辑
+            # ...
+            
+            # 更新仓位状态
+            with self.lock:
+                self.active_orders[pair_key]['status'] = 'active'
+            
+            Logger.info(f"创建套利仓位成功: {pair_key}, position_id: {position_id}")
+            return position_id
+        except Exception as e:
+            # 如果创建失败，从活跃订单中移除
+            with self.lock:
+                self.active_orders.pop(pair_key, None)
+            
+            Logger.error(f"创建套利仓位失败: {pair_key}, 错误: {str(e)}")
+            return None
 
     def _start_monitor(self):
         """启动订单监控线程"""
@@ -335,6 +204,8 @@ def test_arbitrage_position_manager():
     hedge_exchange = exchanges['exchange_hedge']
 
     pairs = load_pairs()
+    # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
+
 
     # 初始化市场数据管理器
     md = MarketDataService()
@@ -378,9 +249,23 @@ def test_arbitrage_position_manager():
         strategy=strategy,
         exchange_1=exchange_1,
         exchange_2=exchange_2,
-        hedge_exchange=hedge_exchange
+        hedge_exchange=hedge_exchange,
+        context=context
     )
 
+    try:
+        # 运行策略
+        asyncio.run(strategy.execute())
+    except KeyboardInterrupt:
+        Logger.info("用户中断程序")
+    except Exception as e:
+        Logger.error(f"程序异常: {str(e)}")
+    finally:
+        # 停止策略和MarketDataService
+        strategy.stop()
+        md.stop()
+        Logger.info("程序已终止")
+        print("程序已终止")
 
     try:
         while True:

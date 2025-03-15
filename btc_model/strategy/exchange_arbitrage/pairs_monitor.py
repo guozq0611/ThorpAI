@@ -11,11 +11,11 @@ from btc_model.setting.setting import get_settings
 params = {
     'enableRateLimit': True,
     'proxies': {
-        'http': get_settings('common')['proxies']['http'],
-        'https': get_settings('common')['proxies']['https'],
+        'http': get_settings('common')['proxies'].get('http', None),
+        'https': get_settings('common')['proxies'].get('https', None),
     },
-    'aiohttp_proxy': get_settings('common')['proxies']['http'],
-    'ws_proxy': get_settings('common')['proxies']['http']
+    'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+    'ws_proxy': get_settings('common')['proxies'].get('http', None)
 }
 
 class PairsMonitor:

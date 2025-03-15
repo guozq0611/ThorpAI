@@ -8,8 +8,7 @@ from btc_model.core.util.file_util import FileUtil
 SETTINGS: Dict[str, Any] = {
     # 配置request url需要的proxies，如果网络环境无需代理，注释即可
     "common.proxies": {
-        # 'http': 'http://127.0.0.1:52469',
-        # 'https': 'http://127.0.0.1:52469'
+     
         'http': 'http://127.0.0.1:7897',
         'https': 'http://127.0.0.1:7897'
     },
@@ -180,22 +179,10 @@ def get_settings(prefix: str = "") -> Dict[str, Any]:
     return {k[prefix_length:]: v for k, v in SETTINGS.items() if k.startswith(prefix)}
 
 
-def get_proxy_settings():
-    # 优先使用环境变量
-    http_proxy = os.getenv('http_proxy')
-    https_proxy = os.getenv('https_proxy')
-    
-    if http_proxy and https_proxy:
-        return {
-            "http": http_proxy,
-            "https": https_proxy
-        }
-    
-    # 如果环境变量未设置，使用 SETTINGS 中的配置
-    return SETTINGS.get("common.proxies", {
-        "http": "http://127.0.0.1:7890",
-        "https": "http://127.0.0.1:7890"
-    })
+
+proxy_http = get_settings('common')['proxies'].get('http', None)
+proxy_https = get_settings('common')['proxies'].get('https', None)
+
 
 if __name__ == "__main__":
     setting = get_settings('cex.okx')

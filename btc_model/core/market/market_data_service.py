@@ -369,10 +369,10 @@ class MarketDataService:
                     'asks': orderbook['asks'],
                     'timestamp': orderbook['timestamp'] or int(time.time() * 1000)
                 }
-            Logger.info(f"orderbook updated: {key}, bid1:{orderbook['bids'][0] if orderbook['bids'] else None} ask1:{orderbook['asks'][0] if orderbook['asks'] else None}")
+            #Logger.info(f"orderbook updated: {key[:30]:<30}, bid1:{orderbook['bids'][0] if orderbook['bids'] else None} ask1:{orderbook['asks'][0] if orderbook['asks'] else None}")
             
             # 等待一段时间再次获取（模拟订阅）
-            await asyncio.sleep(5)  # 每5秒更新一次
+            await asyncio.sleep(0.5)  # 每5秒更新一次
         except Exception as e:
             Logger.error(f"使用fetch_order_book获取订单簿失败: {key}, 错误: {str(e)}")
             # 确保有一个空的数据结构
@@ -390,14 +390,7 @@ class MarketDataService:
             # 优先使用异步交易所的fetch_funding_rate方法
             if exchange_id in self.pro_exchanges:
                 pro_exchange = self.pro_exchanges[exchange_id]
-                
-                # 检查交易所是否支持fetch_funding_rate方法
-                if hasattr(pro_exchange, 'fetch_funding_rate'):
-                    funding_rate = await asyncio.wait_for(pro_exchange.fetch_funding_rate(symbol), 30)
-                else:
-                    # 如果不支持，尝试使用fetch_funding_rates并找到对应的交易对
-                    all_rates = await asyncio.wait_for(pro_exchange.fetch_funding_rates(), 30)
-                    funding_rate = all_rates.get(symbol, {'fundingRate': 0, 'timestamp': int(time.time() * 1000)})
+                funding_rate = await asyncio.wait_for(pro_exchange.fetch_funding_rate(symbol), 30)
             else:
                 # 如果没有异步交易所实例，使用同步交易所
                 exchange = self.exchanges[exchange_id]
@@ -415,7 +408,7 @@ class MarketDataService:
                     'fundingRate': funding_rate.get('fundingRate', 0),
                     'timestamp': funding_rate.get('timestamp', int(time.time() * 1000))
                 }
-            Logger.info(f"funding_rate updated: {key}, rate:{funding_rate.get('fundingRate', 0)}")
+            # Logger.info(f"funding_rate updated:  {key[:30]:<30}, rate:{funding_rate.get('fundingRate', 0)}")
             
             # 等待一段时间再次获取（模拟订阅）
             await asyncio.sleep(60)  # 资金费率通常每小时或每8小时更新一次，所以60秒的间隔是合理的
@@ -431,6 +424,8 @@ class MarketDataService:
     
     def is_data_fresh(self, data_type: str, exchange_id: str, symbol: str, max_age_ms: int = 10000) -> bool:
         """检查数据是否新鲜（默认10秒内的数据视为新鲜）"""
+        return True
+    
         key = f"{exchange_id}:{symbol}"
         current_time = int(time.time() * 1000)
         

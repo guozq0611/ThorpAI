@@ -109,7 +109,7 @@ class ExchangeArbitrageStrategy:
 
         # 获取或创建上下文实例
         self.context = context if context else Context()
-        self.md = self.context.market_data_service
+        self.market_data_service: MarketDataService = self.context.market_data_service
 
   
         # 初始化数据结构
@@ -132,27 +132,35 @@ class ExchangeArbitrageStrategy:
         Logger.info(f"跨交易所套利策略初始化完成，监控 {len(pairs)} 个交易对")
     
     def _subscribe_market_data(self):
-        """订阅需要的行情数据"""
-        # 获取所有需要订阅的交易对
+        """
+        订阅交易对的行情数据
+        """
+        spot_symbols_to_watch = set()
+        swap_symbols_to_watch = set()
+        # 收集所有需要订阅的交易对
         for pair in self.pairs:
             symbol_a = pair['symbol_a']
             symbol_b = pair['symbol_b']
+            spot_symbols_to_watch.add(symbol_a)
+            spot_symbols_to_watch.add(symbol_b)
             
-            # 订阅现货订单簿
-            self.md.subscribe_orderbook('exchange_1', symbol_a)
-            self.md.subscribe_orderbook('exchange_2', symbol_b)
-            
-            # 订阅现货行情
-            self.md.subscribe_ticker('exchange_1', symbol_a)
-            self.md.subscribe_ticker('exchange_2', symbol_b)
-            
-            # 添加合约交易对并订阅
-            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_b)
-            self.md.subscribe_orderbook('hedge_exchange', contract_symbol)
-            self.md.subscribe_ticker('hedge_exchange', contract_symbol)
-            self.md.subscribe_funding_rate('hedge_exchange', contract_symbol)
+            # 添加合约交易对
+            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_a)
+            swap_symbols_to_watch.add(contract_symbol)
         
-        Logger.info(f"已订阅 {len(self.pairs)} 个交易对的行情数据")
+        # 订阅所有交易对的订单簿
+        for symbol in spot_symbols_to_watch:
+            if symbol in [pair['symbol_a'] for pair in self.pairs]:
+                self.market_data_service.subscribe_orderbook('exchange_1', symbol)
+            if symbol in [pair['symbol_b'] for pair in self.pairs]:
+                self.market_data_service.subscribe_orderbook('exchange_2', symbol)
+
+        for symbol in swap_symbols_to_watch:
+            self.market_data_service.subscribe_orderbook('hedge_exchange', symbol)
+            self.market_data_service.subscribe_funding_rate('hedge_exchange', symbol)
+        
+        Logger.info(f"已订阅 {len(spot_symbols_to_watch)} 个现货交易对的市场数据")
+        Logger.info(f"已订阅 {len(swap_symbols_to_watch)} 个合约交易对的市场数据")
     
     def _monitor_arbitrage_opportunities(self):
         """监控套利机会"""
@@ -172,16 +180,16 @@ class ExchangeArbitrageStrategy:
         """更新交易对数据"""
         try:
             # 获取交易所1的订单簿数据
-            orderbook_a = self.md.get_orderbook('exchange_1', pair_key[0])
-            if orderbook_a['bids'] and orderbook_a['asks'] and self.md.is_data_fresh('orderbook', 'exchange_1', pair_key[0]):
+            orderbook_a = self.market_data_service.get_orderbook('exchange_1', pair_key[0])
+            if orderbook_a['bids'] and orderbook_a['asks'] and self.market_data_service.is_data_fresh('orderbook', 'exchange_1', pair_key[0]):
                 self.pair_data[pair_key]['price_a'] = {
                     'bid': orderbook_a['bids'][0][0],
                     'ask': orderbook_a['asks'][0][0]
                 }
             
             # 获取交易所2的订单簿数据
-            orderbook_b = self.md.get_orderbook('exchange_2', pair_key[1])
-            if orderbook_b['bids'] and orderbook_b['asks'] and self.md.is_data_fresh('orderbook', 'exchange_2', pair_key[1]):
+            orderbook_b = self.market_data_service.get_orderbook('exchange_2', pair_key[1])
+            if orderbook_b['bids'] and orderbook_b['asks'] and self.market_data_service.is_data_fresh('orderbook', 'exchange_2', pair_key[1]):
                 self.pair_data[pair_key]['price_b'] = {
                     'bid': orderbook_b['bids'][0][0],
                     'ask': orderbook_b['asks'][0][0]
@@ -192,7 +200,7 @@ class ExchangeArbitrageStrategy:
         except Exception as e:
             Logger.error(f"更新交易对数据异常: {pair_key}, 错误: {str(e)}")
     
-    async def calculate_spread(self, pair_key):
+    def calculate_spread(self, pair_key):
         """带校验的价差计算"""
         data = self.pair_data[pair_key]
         try:
@@ -219,13 +227,13 @@ class ExchangeArbitrageStrategy:
                     )
 
                 # 触发报警的价差阈值
-                if spread > 0.01:  
-                    await self.trigger_arbitrage(pair_key)
+                if spread > 0.001:  
+                    self.trigger_arbitrage(pair_key)
         except (TypeError, ZeroDivisionError, KeyError) as e:
             pair_key_str = '-'.join(pair_key) if isinstance(pair_key, tuple) else pair_key
             Logger.error(f"价差计算错误 {pair_key_str}: {str(e)}")
     
-    async def trigger_arbitrage(self, pair_key):
+    def trigger_arbitrage(self, pair_key):
         """触发套利信号"""
         data = self.pair_data[pair_key]
         pair_key_str = '-'.join(pair_key) if isinstance(pair_key, tuple) else pair_key
@@ -265,6 +273,7 @@ class ExchangeArbitrageStrategy:
 
 
 def setup_exchanges():
+
     """设置交易所实例"""
     # 初始化币安交易所
     setting = get_settings('cex.binance')
@@ -275,16 +284,16 @@ def setup_exchanges():
     params_1 = {
         'enableRateLimit': True,
         'proxies': {
-            'http': get_settings('common')['proxies']['http'],                  
-            'https': get_settings('common')['proxies']['http'],
+            'http': get_settings('common')['proxies'].get('http', None),                  
+            'https': get_settings('common')['proxies'].get('https', None),
         },
         'apiKey': apikey,          
         'secret': secretkey,       
         'options': {
             'defaultType': 'spot',  # 可选：'spot', 'margin', 'future'
         },
-        'aiohttp_proxy': get_settings('common')['proxies']['http'],
-        'ws_proxy': get_settings('common')['proxies']['http']
+        'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+        'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
 
     exchange_1 = ccxt.binance(params_1)
@@ -298,8 +307,8 @@ def setup_exchanges():
     params_2 = {
         'enableRateLimit': True,
         'proxies': {
-            'http': get_settings('common')['proxies']['http'],                   
-            'https': get_settings('common')['proxies']['http'],  
+            'http': get_settings('common')['proxies'].get('http', None),                   
+            'https': get_settings('common')['proxies'].get('https', None),  
         },
         'apiKey': apikey,          
         'secret': secretkey,  
@@ -307,8 +316,8 @@ def setup_exchanges():
         'options': {
             'defaultType': 'spot',
         },
-        'aiohttp_proxy': get_settings('common')['proxies']['http'],
-        'ws_proxy': get_settings('common')['proxies']['http']
+        'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+        'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_2 = ccxt.okx(params_2)
 
@@ -321,16 +330,16 @@ def setup_exchanges():
     params_hedge = {
         'enableRateLimit': True,
         'proxies': {
-            'http': get_settings('common')['proxies']['http'],                  
-            'https': get_settings('common')['proxies']['http'],
+            'http': get_settings('common')['proxies'].get('http', None),                  
+            'https': get_settings('common')['proxies'].get('https', None),
         },
         'apiKey': apikey,          
         'secret': secretkey,       
         'options': {
             'defaultType': 'swap',  # 可选：'spot', 'margin', 'future'
         },
-        'aiohttp_proxy': get_settings('common')['proxies']['http'],
-        'ws_proxy': get_settings('common')['proxies']['http']
+        'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+        'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_hedge = ccxt.binance(params_hedge)
 
@@ -357,11 +366,27 @@ def load_pairs():
 
 if __name__ == "__main__":
     pairs = load_pairs()
+    # pairs = [pair for pair in pairs if pair['base'] == 'DOGGE']
+
+
+
 
     exchanges = setup_exchanges()
     exchange_1 = exchanges['exchange_1']
     exchange_2 = exchanges['exchange_2']
     hedge_exchange = exchanges['exchange_hedge']
+
+    filtered_pairs = []
+    swap_symbols = CryptoUtil.get_perpetual_markets(exchange=hedge_exchange)
+    swap_symbols = pd.DataFrame(swap_symbols).transpose()[['symbol', 'quote', 'base']].reset_index(drop=True)
+    # 使用列表推导式同时过滤 base 和 quote
+    filtered_pairs = [pair for pair in pairs 
+                    if pair['quote'] == 'USDT' and pair['base'] in swap_symbols['base'].values]
+    
+    pairs = filtered_pairs
+
+    # 测试用少量的币种
+    pairs = [pair for pair in pairs if pair['base'] in ['DOGE', 'LSK', 'XRP', 'BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'LINK', 'BCH', 'XLM', 'XMR', 'XRP', 'BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'LINK', 'BCH', 'XLM', 'XMR']]
 
     # 初始化Context单例
     context = Context.get_instance()
