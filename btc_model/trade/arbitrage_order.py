@@ -11,7 +11,8 @@ from btc_model.core.common.const import OrderStatus
 @dataclass
 class ArbitrageOrder:
     """套利订单（包含两腿）"""
-    id: str
+    order_id: str
+    symbol_id: str
     leg_1: OrderData  
     leg_2: OrderData 
     create_time: datetime = datetime.now()

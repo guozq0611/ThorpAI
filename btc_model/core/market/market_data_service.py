@@ -103,6 +103,12 @@ class MarketDataService:
             
             # 创建异步交易所实例
             pro_exchange = getattr(ccxtpro, exchange_id)(config)
+
+            if exchange.isSandboxModeEnabled:
+                pro_exchange.set_sandbox_mode(True)
+                Logger.info(f"{exchange_id} 使用沙盒模式")
+        
+
             
             # 测试连接
             Logger.info(f"创建 {exchange_id} 的异步交易所实例成功")
@@ -355,7 +361,7 @@ class MarketDataService:
         key = f"{exchange_id}:{symbol}"
         try:
             # 优先使用异步交易所的fetch_order_book方法
-            if exchange_id in self.pro_exchanges:
+            if exchange_id in self.pro_exchanges and not self.pro_exchanges[exchange_id].isSandboxModeEnabled:
                 pro_exchange = self.pro_exchanges[exchange_id]
                 orderbook = await asyncio.wait_for(pro_exchange.watch_order_book(symbol, limit=5), 30)
             else:
@@ -424,6 +430,7 @@ class MarketDataService:
     
     def is_data_fresh(self, data_type: str, exchange_id: str, symbol: str, max_age_ms: int = 10000) -> bool:
         """检查数据是否新鲜（默认10秒内的数据视为新鲜）"""
+
         return True
     
         key = f"{exchange_id}:{symbol}"

@@ -130,6 +130,7 @@ class PositionData:
 
     volume: float = 0
     frozen: float = 0
+    entry_price: float = 0
 
 
 

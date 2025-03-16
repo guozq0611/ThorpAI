@@ -14,9 +14,13 @@ class ArbitrageHedgeOrder():
     套利对冲建仓订单
     包含2腿现货多头和1腿合约空头
     """
-    id: str
+    order_id: str
+    # 交易货币
+    symbol_id: str
+    # 现货腿
     leg_spot_1: OrderData  
     leg_spot_2: OrderData 
+    # 合约腿
     leg_swap: OrderData
     create_time: datetime = datetime.now()
     update_time: datetime = datetime.now()

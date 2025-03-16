@@ -11,6 +11,7 @@ SETTINGS: Dict[str, Any] = {
      
         'http': 'http://127.0.0.1:7897',
         'https': 'http://127.0.0.1:7897'
+
     },
 
 
@@ -41,7 +42,7 @@ SETTINGS: Dict[str, Any] = {
    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     # 配置okx用的代理，若网络网络无需代理，设置为False
-    "cex.okx.proxy": True,
+    "cex.okx.proxy": False,
     "cex.okx.fees": {
                 'spot': {
                     'maker': 0.0008,
@@ -62,7 +63,7 @@ SETTINGS: Dict[str, Any] = {
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     
     # 配置binance用的代理，若网络网络无需代理，设置为False
-    "cex.binance.proxy": True,
+    "cex.binance.proxy": False,
     "cex.binance.fees": {
                 'spot': {
                     'maker': 0.001,

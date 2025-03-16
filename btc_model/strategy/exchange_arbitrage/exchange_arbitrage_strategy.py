@@ -276,7 +276,7 @@ def setup_exchanges():
 
     """设置交易所实例"""
     # 初始化币安交易所
-    setting = get_settings('cex.binance')
+    setting = get_settings('cex.sandbox.binance.spot')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
 
@@ -297,9 +297,10 @@ def setup_exchanges():
     }
 
     exchange_1 = ccxt.binance(params_1)
+    exchange_1.set_sandbox_mode(True)
 
      # 初始化 OKX 交易所
-    setting = get_settings('cex.okx')
+    setting = get_settings('cex.sandbox.okx')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
     passphrase = setting['passphrase']
@@ -320,10 +321,11 @@ def setup_exchanges():
         'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_2 = ccxt.okx(params_2)
+    exchange_2.set_sandbox_mode(True)
 
 
     # 初始化币安合约交易所
-    setting = get_settings('cex.binance')
+    setting = get_settings('cex.sandbox.binance.swap')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
 
@@ -342,6 +344,7 @@ def setup_exchanges():
         'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_hedge = ccxt.binance(params_hedge)
+    exchange_hedge.set_sandbox_mode(True)
 
    
     return {

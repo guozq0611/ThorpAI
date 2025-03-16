@@ -1175,12 +1175,15 @@ class CryptoUtil:
         Returns:
             str: 永续合约符号
         """
-        if exchange.id.lower() == 'okx':
-            # OKX格式: 'LSK/USDT' -> 'LSK/USDT:USDT'
-            base, quote = symbol.split('/')
-            return f'{base}/{quote}:{quote}'
-        elif exchange.id.lower() == 'binance':
-            # Binance格式: 'LSK/USDT' -> 'LSKUSDT'
-            return symbol.replace('/', '')
-        else:
-            return symbol
+        base, quote = symbol.split('/')
+        return f'{base}/{quote}:{quote}'
+
+        # if exchange.id.lower() == 'okx':
+        #     # OKX格式: 'LSK/USDT' -> 'LSK/USDT:USDT'
+        #     base, quote = symbol.split('/')
+        #     return f'{base}/{quote}:{quote}'
+        # elif exchange.id.lower() == 'binance':
+        #     # Binance格式: 'LSK/USDT' -> 'LSKUSDT'
+        #     return symbol.replace('/', '')
+        # else:
+        #     return symbol
