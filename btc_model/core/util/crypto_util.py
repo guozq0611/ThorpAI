@@ -1,10 +1,48 @@
 import ccxt
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 from decimal import Decimal
 import numpy as np
+from datetime import datetime
 
 from btc_model.setting.setting import get_settings
 from btc_model.core.common.singleton import Singleton
+from btc_model.core.common.object import OrderData
+from btc_model.core.common.const import Exchange, OrderStatus, Direction, OrderType, Offset
+
+
+# Order type map
+ORDERTYPE_2CCXT: dict[OrderType, str] = {
+    OrderType.LIMIT: "LIMIT",
+    OrderType.MARKET: "MARKET"
+}
+ORDERTYPE_FROM_CCXT: dict[str, OrderType] = {v: k for k, v in ORDERTYPE_2CCXT.items()}
+
+# Direction map
+DIRECTION_2CCXT: dict[Direction, str] = {
+    Direction.BUY: "BUY",
+    Direction.SELL: "SELL",
+    Direction.LONG: "LONG",
+    Direction.SHORT: "SHORT",
+  
+}
+DIRECTION_FROM_CCXT: dict[str, Direction] = {v: k for k, v in DIRECTION_2CCXT.items()}
+
+# Order status map
+STATUS_2CCXT: dict[OrderStatus, str] = {
+    OrderStatus.OPEN: "OPEN",
+    OrderStatus.CLOSED: "CLOSED",
+    OrderStatus.CANCELLED: "CANCELED",
+    OrderStatus.REJECTED: "REJECTED",
+    OrderStatus.EXPIRED: "EXPIRED"
+}
+STATUS_FROM_CCXT: dict[str, OrderStatus] = {v: k for k, v in STATUS_2CCXT.items()}
+
+EXCHANGE_2CCXT: dict[Exchange, str] = {
+    Exchange.BINANCE: "binance",
+    Exchange.OKX: "okx",
+}
+EXCHANGE_FROM_CCXT: dict[str, Exchange] = {v: k for k, v in EXCHANGE_2CCXT.items()}
+
 
 
 class CryptoUtil:
@@ -1187,3 +1225,94 @@ class CryptoUtil:
         #     return symbol.replace('/', '')
         # else:
         #     return symbol
+
+    
+    @staticmethod
+    def convert_order_data_from_ccxt(ccxt_exchange: Union[ccxt.Exchange, ccxt.pro.Exchange], exchange_order: dict) -> OrderData:
+        """
+        将交易所返回的订单数据转换为OrderData对象
+        
+        Args:
+            exchange_order: 交易所返回的订单数据
+            exchange: 交易所枚举值
+            
+        Returns:
+            OrderData: 转换后的OrderData对象
+        """
+
+        exchange = EXCHANGE_FROM_CCXT[ccxt_exchange.id]
+
+        # 确定订单方向
+        direction = DIRECTION_FROM_CCXT[exchange_order["side"].upper()]
+                
+        # 确定订单类型
+        order_type = ORDERTYPE_FROM_CCXT[exchange_order["type"].upper()]
+                
+
+
+#             {
+#     'id':                '12345-67890:09876/54321', // string
+#     'clientOrderId':     'abcdef-ghijklmnop-qrstuvwxyz', // a user-defined clientOrderId, if any
+#     'datetime':          '2017-08-17 12:42:48.000', // ISO8601 datetime of 'timestamp' with milliseconds
+#     'timestamp':          1502962946216, // order placing/opening Unix timestamp in milliseconds
+#     'lastTradeTimestamp': 1502962956216, // Unix timestamp of the most recent trade on this order
+#     'status':      'open',        // 'open', 'closed', 'canceled', 'expired', 'rejected'
+#     'symbol':      'ETH/BTC',     // symbol
+#     'type':        'limit',       // 'market', 'limit'
+#     'timeInForce': 'GTC',         // 'GTC', 'IOC', 'FOK', 'PO'
+#     'side':        'buy',         // 'buy', 'sell'
+#     'price':        0.06917684,   // float price in quote currency (may be empty for market orders)
+#     'average':      0.06917684,   // float average filling price
+#     'amount':       1.5,          // ordered amount of base currency
+#     'filled':       1.1,          // filled amount of base currency
+#     'remaining':    0.4,          // remaining amount to fill
+#     'cost':         0.076094524,  // 'filled' * 'price' (filling price used where available)
+#     'trades':     [ ... ],        // a list of order trades/executions
+#     'fee': {                      // fee info, if available
+#         'currency': 'BTC',        // which currency the fee is (usually quote)
+#         'cost': 0.0009,           // the fee amount in that currency
+#         'rate': 0.002,            // the fee rate (if available)
+#     },
+#     'info': { ... },              // the original unparsed order structure as is
+# }
+                
+        # 获取订单ID
+        order_id = exchange_order.get("id", "")
+        
+        # 获取交易对
+        symbol = exchange_order.get("symbol", "")
+        
+        # 获取价格和数量
+        price = float(exchange_order.get("price", 0))
+        volume = float(exchange_order.get("amount", 0))
+        volume_traded = float(exchange_order.get("filled", 0))
+
+        status = STATUS_FROM_CCXT[exchange_order['status'].upper()]
+        
+        # 获取时间
+        dt = None
+        if "datetime" in exchange_order and exchange_order["datetime"]:
+            # 将ISO格式的UTC时间转换为datetime对
+            utc_dt = datetime.fromisoformat(exchange_order["datetime"].replace("Z", "+00:00"))
+            # 转换为本地时间
+            dt = utc_dt.astimezone(datetime.now().astimezone().tzinfo)
+        
+        
+        
+        # 创建OrderData对象
+        order_data = OrderData(
+            order_id=order_id,
+            symbol=symbol,
+            exchange=exchange,
+            order_type=order_type,
+            direction=direction,
+            price=price,
+            volume=volume,
+            volume_traded=volume_traded,
+            status=status,
+            datetime=dt
+        )
+        
+        return order_data    
+
+   

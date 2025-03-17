@@ -20,6 +20,13 @@ from btc_model.core.market.market_data_service import MarketDataService
 from btc_model.core.common.context import Context
 
 
+class CommonParams(NamedTuple):
+    """
+    通用参数
+    """
+    order_timeout: int  # 订单超时时间（秒）
+    retry_times: int  # 重试次数
+
 
 class CapitalLimitParams(NamedTuple):
     """
@@ -61,6 +68,7 @@ class StrategyParams(NamedTuple):
     """
     策略参数
     """
+    common_params: CommonParams
     capital_limit_params: CapitalLimitParams
     spread_threshold_params: SpreadThresholdParams
     spread_occurrence_params: SpreadOccurrenceParams
@@ -70,6 +78,7 @@ class StrategyParams(NamedTuple):
     def from_settings(cls) -> 'StrategyParams':
         config = get_settings('strategy.exchange_arbitrage')
         return cls(
+            common_params=CommonParams(**config['common_params']),
             capital_limit_params=CapitalLimitParams(**config['capital_limit_params']),
             spread_threshold_params=SpreadThresholdParams(**config['spread_threshold_params']),
             spread_occurrence_params=SpreadOccurrenceParams(**config['spread_occurrence_params']),

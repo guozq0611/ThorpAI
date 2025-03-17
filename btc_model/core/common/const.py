@@ -109,8 +109,9 @@ class EntityType(Enum):
 
 
 class OrderType(Enum):
-    LIMIT_ORDER = "LIMIT_ORDER"
-    MARKET_ORDER = "MARKET_ORDER"
+    LIMIT = "LIMIT"
+    MARKET = "MARKET"
+    STOP = "STOP"
 
 
 class Direction(Enum):
@@ -149,12 +150,13 @@ class OrderStatus(Enum):
     """
     NONE = "NONE"
     SUBMITTING = "SUBMITTING"
-    SUBMITTED = "SUBMITTED"
     CANCELING = "CANCELING"
-    CANCELLED = "CANCELLED"
+
+    OPEN = "OPEN"
+    EXPIRED = 'EXPIRED'
     REJECTED = "REJECTED"
-    FILLED = "FILLED"
-    PARTIAL_FILLED = "PARTIAL_FILLED"
+    CANCELLED = "CANCELLED"
+    CLOSED = "CLOSED"
 
     @property
     def is_pending(self) -> bool:
@@ -166,9 +168,9 @@ class OrderStatus(Enum):
     @property
     def is_finished(self) -> bool:
         """成交状态"""
-        return self in {OrderStatus.FILLED, 
-                        OrderStatus.PARTIAL_FILLED,
+        return self in {OrderStatus.CLOSED, 
                         OrderStatus.CANCELLED,
+                        OrderStatus.EXPIRED,
                         OrderStatus.REJECTED}
     
     @property
@@ -192,5 +194,20 @@ class Offset(Enum):
     CLOSE = "CLOSE"
     CLOSETODAY = "CLOSETODAY"
     CLOSEYESTERDAY = "CLOSEYESTERDAY"
+
+
+# 事件类型
+class EventType:
+    """
+    事件类型常量
+    """
+    ON_ORDER = "ON_ORDER"  # 订单更新事件
+    ON_TRADE = "ON_TRADE"  # 成交事件
+    ON_CANCEL = "ON_CANCEL"  # 订单取消事件
+    ON_POSITION = "ON_POSITION"  # 持仓更新事件
+    ON_ACCOUNT = "ON_ACCOUNT"  # 账户更新事件
+    ON_CONTRACT = "ON_CONTRACT"  # 合约信息事件
+    ON_ERROR = "ON_ERROR"  # 错误事件
+    ON_LOG = "ON_LOG"  # 日志事件
 
 

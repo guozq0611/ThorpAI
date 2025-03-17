@@ -121,7 +121,13 @@ SETTINGS: Dict[str, Any] = {
 
     # ------------------------------------------------------
     # 套利策略参数
-    # ------------------------------------------------------    
+    # ------------------------------------------------------  
+    "strategy.exchange_arbitrage.common_params": {
+        "order_timeout": 10,
+        "retry_times": 3,
+
+    },
+    
     "strategy.exchange_arbitrage.capital_limit_params": {
         "max_amount": 100,
         "max_trading_pairs": 10,

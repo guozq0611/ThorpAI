@@ -8,7 +8,7 @@ import traceback
 from typing import Union
 from ccxt.base.errors import RequestTimeout, NetworkError
 
-from btc_model.core.common.const import OrderStatus
+from btc_model.core.common.const import OrderStatus, EventType
 from btc_model.core.common.object import PositionData
 from btc_model.core.util.log_util import Logger
 from btc_model.core.util.serialno_util import SerialnoUtil
@@ -21,8 +21,9 @@ from btc_model.trade.arbitrage_hedge_order import ArbitrageHedgeOrder
 from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import ExchangeArbitrageStrategy
 from btc_model.core.common.context import Context
 from btc_model.trade.position_holder import PositionHolder
-from btc_model.core.common.const import PositionDirection, Exchange
+from btc_model.core.common.const import PositionDirection, Exchange, Direction  
 from collections import defaultdict
+from btc_model.core.engine.event_engine import EventEngine, Event
 
 class ArbitragePositionManager(PositionManager):
     """
@@ -47,6 +48,14 @@ class ArbitragePositionManager(PositionManager):
        
         self.lock = threading.Lock()
         self._start_monitor()
+        
+        # 初始化事件引擎
+        self.event_engine = EventEngine()
+        self.event_engine.start()
+        
+        # 注册事件处理函数
+        self.event_engine.register(EventType.ON_CANCEL, self.on_order_cancel)
+        self.event_engine.register(EventType.ON_ORDER, self.on_order_update)
     
     def create_position(self, pair_key, data):
         pass
@@ -69,7 +78,7 @@ class ArbitragePositionManager(PositionManager):
                 spot_orderbook_1 = self.market_data_service.get_orderbook('exchange_1', symbol_id)
                 spot_orderbook_2 = self.market_data_service.get_orderbook('exchange_2', symbol_id)
 
-                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
+                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, symbol_id)
                 swap_orderbook = self.market_data_service.get_orderbook('exchange_hedge', contract_symbol)
                 
                 # 检查行情数据是否有效和新鲜
@@ -107,30 +116,39 @@ class ArbitragePositionManager(PositionManager):
                     data['amount'],
                     spot_price_1
                 )
+                spot_order_1 = self.exchange_1.fetch_order(spot_order_1['id'], symbol_id)
+
                 spot_order_2 = self.exchange_2.create_limit_buy_order(
                     symbol_id,
                     data['amount'],
                     spot_price_2
                 )
+                spot_order_2 = self.exchange_2.fetch_order(spot_order_2['id'], symbol_id)
 
-                swap_order = self.hedge_exchange.create_limit_sell_order(
+                swap_order = self.exchange_hedge.create_limit_sell_order(
                     contract_symbol,
                     data['amount'],
                     swap_price
                 )
+                swap_order = self.exchange_hedge.fetch_order(swap_order['id'], contract_symbol)
+                
+                spot_order_1 = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, spot_order_1)
+                spot_order_2 = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, spot_order_2)
+                swap_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, swap_order)
                 
                 # 记录订单
                 order_id = SerialnoUtil.create_serial_no(prefix='arb_', length=20)
-                arbitrage_order = ArbitrageHedgeOrder(
-                    id=order_id,
-                    symbol_id=symbol_id,
-                    leg_spot_1=None,  # 这里需要修改，因为没有 spot_order_1
-                    leg_spot_2=spot_order_2,
-                    leg_swap=swap_order
+                arbitrage_hedge_order = ArbitrageHedgeOrder(
+                    order_id=order_id,
+                    symbol_id=symbol_id
                 )
 
+                arbitrage_hedge_order.put_leg('spot_1', spot_order_1)
+                arbitrage_hedge_order.put_leg('spot_2', spot_order_2)
+                arbitrage_hedge_order.put_leg('swap', swap_order)
+
                 with self.lock:
-                    self.active_orders[order_id] = arbitrage_order
+                    self.active_orders[order_id] = arbitrage_hedge_order
                     self.active_symbol_ids[symbol_id] += 1
                     
                 return order_id
@@ -187,67 +205,73 @@ class ArbitragePositionManager(PositionManager):
     def _check_order_status(self, order_id: str, order: Union[ArbitrageOrder, ArbitrageHedgeOrder]):
         """检查订单状态并处理"""
         try:
+ 
+            spot_order_1, spot_order_2, swap_order = order.get_last_leg()
             # 获取订单最新状态
+            if spot_order_1.is_active:
+                exhange_order = self.exchange_1.fetch_order(id=spot_order_1.order_id, symbol=order.symbol_id)
+                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, exhange_order)
+                
+                spot_order_1.volume_traded = updated_order.volume_traded
+                spot_order_1.status = updated_order.status
 
-            spot_order_1 = self.exchange_1.fetch_order(order.leg_spot_1.order_id)
-            spot_order_2 = self.exchange_2.fetch_order(order.leg_spot_2.order_id)
+            
+            if spot_order_2.is_active:
+                exhange_order = self.exchange_2.fetch_order(id=spot_order_2.order_id, symbol=order.symbol_id)
+                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, exhange_order)
                 
-            # 更新成交量
-            order.leg_spot_1.filled = spot_order_1['filled']
-            order.leg_spot_2.filled = spot_order_2['filled']
+                spot_order_2.volume_traded = updated_order.volume_traded
+                spot_order_2.status = updated_order.status
 
-            if isinstance(order, ArbitrageHedgeOrder):
-                swap_order = self.exchange_hedge.fetch_order(order.leg_swap.order_id)
-                order.leg_swap.filled = swap_order['filled']
-            
-            # 检查是否需要撤单
-            if time.time() - order.create_time > order.timeout:
-                self._cancel_and_adjust(order_id, order)
-                return
+            if isinstance(order, ArbitrageHedgeOrder) and swap_order.is_active:
+                exhange_order = self.exchange_hedge.fetch_order(
+                    id=swap_order.order_id, 
+                    symbol=CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)
+                    )
+                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, exhange_order)
                 
-            # 处理残腿
-            if abs(order.leg_spot_2.filled - order.leg_swap.filled) > 0.0001:
-                self._handle_imbalance(order_id, order)
+                swap_order.volume_traded = updated_order.volume_traded
+                swap_order.status = updated_order.status
                 
-            # 检查是否完全成交
-            if order.leg_spot_1.filled >= order.amount and order.leg_spot_2.filled >= order.amount:
-                if isinstance(order, ArbitrageHedgeOrder):
-                    if order.leg_swap.filled >= order.amount:
-                        order.status = OrderStatus.FILLED
-                else:
-                    order.status = OrderStatus.FILLED
-            
-            
-            if order.status == OrderStatus.FILLED:
-                self.active_orders.pop(order_id)
-                Logger.info(f"套利订单 {order_id} 完全成交")
-            else:
-                Logger.info(f"套利订单 {order_id} 未完全成交")
+            # # 检查是否需要撤单
+            # if time.time() - order.create_time > self.strategy_params.common_params.order_timeout:
+            #     self._cancel_and_adjust(order_id, order)
+            #     return
+                
+            # # 处理残腿
+            # if abs(order.leg_spot_1.volume_traded + order.leg_spot_2.volume_traded - order.leg_swap.volume_traded) > 0.0001:
+            #     self._handle_imbalance(order_id, order)
+
+            # if order.status == OrderStatus.is_finished:
+            #     self.active_orders.pop(order_id)
+            #     Logger.info(f"套利订单 {order_id} 完全成交")
+            # else:
+            #     Logger.info(f"套利订单 {order_id} 未完全成交")
 
 
         except Exception as e:
             Logger.error(f"检查订单状态失败: {e}")
             Logger.error(traceback.format_exc())
 
-    def _cancel_and_adjust(self, order_id: str, arbitrage_order: ArbitrageOrder):
+    def _cancel_and_adjust(self, order_id: str, order: Union[ArbitrageOrder, ArbitrageHedgeOrder]):
         """撤单并追单"""
         try:
             # 撤销未完成的订单
-            if arbitrage_order.leg_spot_1 and arbitrage_order.leg_spot_1.filled < arbitrage_order.amount:
-                self.exchange_1.cancel_order(arbitrage_order.leg_spot_1.order_id)
+            if order.leg_spot_1 and order.leg_spot_1.volume_traded < order.amount:
+                self.exchange_1.cancel_order(order.leg_spot_1.order_id)
                 
-            if arbitrage_order.leg_spot_2.filled < arbitrage_order.amount:
-                self.exchange_2.cancel_order(arbitrage_order.leg_spot_2.order_id)
+            if order.leg_spot_2 and order.leg_spot_2.volume_traded < order.amount:
+                self.exchange_2.cancel_order(order.leg_spot_2.order_id)
                 
-            if arbitrage_order.leg_swap.filled < arbitrage_order.amount:
-                self.hedge_exchange.cancel_order(arbitrage_order.leg_swap.order_id)
+            if order.leg_swap and order.leg_swap.volume_traded < order.amount:
+                self.exchange_hedge.cancel_order(order.leg_swap.order_id)
                 
             # 重新下单（剩余未成交部分）
-            remaining_amount = arbitrage_order.amount - max(arbitrage_order.leg_spot_2.filled, arbitrage_order.leg_swap.filled)
+            remaining_amount = order.amount - max(order.leg_spot_1.volume_traded, order.leg_spot_2.volume_traded, order.leg_swap.volume_traded)
             if remaining_amount > 0:
                 # 以更激进的价格重新下单
                 self.create_arbitrage_position(
-                    arbitrage_order.symbol_id,
+                    order.symbol_id,
                     {'amount': remaining_amount}
                 )
                 
@@ -255,24 +279,44 @@ class ArbitragePositionManager(PositionManager):
             Logger.error(f"撤单调整失败: {e}")
             Logger.error(traceback.format_exc())
 
-    def _handle_imbalance(self, order_id: str, arbitrage_order: ArbitrageOrder):
+    def _handle_imbalance(self, order_id: str, order: Union[ArbitrageOrder, ArbitrageHedgeOrder]):
         """处理残腿"""
         try:
             # 计算现货和合约的成交差额
-            spot_filled = arbitrage_order.leg_spot_2.filled
-            if arbitrage_order.leg_spot_1:
-                spot_filled += arbitrage_order.leg_spot_1.filled
+            spot_order_1_filled = order.leg_spot_1.volume_traded * (1 if order.leg_spot_1.direction == Direction.BUY else -1)
+            spot_order_2_filled = order.leg_spot_2.volume_traded * (1 if order.leg_spot_2.direction == Direction.BUY else -1)
+
+            if isinstance(order, ArbitrageHedgeOrder):
+                swap_order_filled = order.leg_swap.volume_traded * (-1)
+            else:
+                swap_order_filled = 0
                 
-            futures_filled = arbitrage_order.leg_swap.filled
-            imbalance = spot_filled - futures_filled
+            imbalance = spot_order_1_filled + spot_order_2_filled + swap_order_filled
             
             if abs(imbalance) < 0.0001:
                 return  # 差额很小，不需要处理
                 
-            if imbalance > 0:  # 现货多成交
+            if not isinstance(order, ArbitrageOrder):
+                # 跨交易所现货的两条腿，一买一卖
+                if imbalance > 0:
+                    # 买单多了
+                    if order.leg_spot_1.direction == Direction.SELL:
+                        new_order = self.exchange_1.create_market_sell_order(
+                            order.symbol_id,
+                            abs(imbalance)
+                        )
+                        order.leg_spot_1.order_id = id
+                    Logger.info(f"补充现货多单: {order.symbol_id}, 数量: {abs(imbalance)}")
+                else:
+                    self.exchange_2.create_market_sell_order(
+                        order.symbol_id,
+                        abs(imbalance)
+                    )
+                    Logger.info(f"补充现货空单: {order.symbol_id}, 数量: {abs(imbalance)}")
+            elif isinstance(order, ArbitrageHedgeOrder) and imbalance > 0:  # 现货多成交
                 # 补充合约空单
-                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, arbitrage_order.symbol_id)
-                self.hedge_exchange.create_market_sell_order(
+                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, arbitrage_order.symbol_id)
+                self.exchange_hedge.create_market_sell_order(
                     contract_symbol,
                     abs(imbalance),
                     params={"positionSide": "SHORT"}  # 尝试使用双向持仓模式
@@ -289,7 +333,67 @@ class ArbitragePositionManager(PositionManager):
             Logger.error(f"处理残腿失败: {e}")
             Logger.error(traceback.format_exc())
 
-
+    def on_order_cancel(self, event: Event):
+        """
+        处理订单取消事件
+        
+        Args:
+            event: 事件对象，data 是 OrderData 对象
+        """
+        order_data = event.data
+        print(f"订单已取消: {order_data.order_id}, 交易对: {order_data.symbol}")
+        
+        # 在这里处理订单取消后的逻辑
+        # 例如，重新下单、调整策略等
+    
+    def on_order_update(self, event: Event):
+        """
+        处理订单更新事件
+        
+        Args:
+            event: 事件对象，data 是 OrderData 对象
+        """
+        order_data = event.data
+        
+        # 检查订单是否被取消
+        if order_data.status == OrderStatus.CANCELLED:
+            # 触发取消事件
+            self.event_engine.put_event(EventType.ON_CANCEL, order_data)
+    
+    def cancel_order(self, order: PositionData):
+        """
+        取消订单
+        
+        Args:
+            order: 要取消的订单
+        """
+        try:
+            # 获取对应的交易所
+            if order.exchange == Exchange.XXX:
+                exchange = self.exchange_1
+            else:
+                exchange = self.exchange_2
+            
+            # 调用交易所API取消订单
+            exchange.cancel_order(order.order_id, order.symbol)
+            
+            # 更新订单状态
+            order.status = OrderStatus.CANCELLED
+            
+            # 触发取消事件
+            self.event_engine.put_event(EventType.ON_CANCEL, order)
+            
+            return True
+        except Exception as e:
+            print(f"取消订单失败: {e}")
+            return False
+    
+    def __del__(self):
+        """
+        析构函数，确保事件引擎停止
+        """
+        if hasattr(self, 'event_engine'):
+            self.event_engine.stop()
 
 def test_arbitrage_position_manager():
     from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import setup_exchanges, load_pairs
@@ -297,7 +401,7 @@ def test_arbitrage_position_manager():
     exchanges = setup_exchanges()
     exchange_1 = exchanges['exchange_1']
     exchange_2 = exchanges['exchange_2']
-    hedge_exchange = exchanges['exchange_hedge']
+    exchange_hedge = exchanges['exchange_hedge']
 
     pairs = load_pairs()
     # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
@@ -345,7 +449,7 @@ def test_arbitrage_position_manager():
             not swap_orderbook['bids'] or
             not md.is_data_fresh('orderbook', 'exchange_1', 'LSK/USDT') or
             not md.is_data_fresh('orderbook', 'exchange_2', 'LSK/USDT') or
-            not md.is_data_fresh('orderbook', 'hedge_exchange', 'LSK/USDT:USDT')):
+            not md.is_data_fresh('orderbook', 'exchange_hedge', 'LSK/USDT:USDT')):
             
             Logger.warning(f"行情数据不完整或不新鲜，尝试直接获取行情 (尝试 {attempt + 1}/{max_retries})")
 
@@ -363,12 +467,14 @@ def test_arbitrage_position_manager():
     context = Context.get_instance()
     context.market_data_service = md
     
-
+    from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import StrategyParams
+    strategy_params = StrategyParams.from_settings()
+    context.strategy_params = strategy_params
 
     position_manager = ArbitragePositionManager(
         exchange_1=exchange_1,
         exchange_2=exchange_2,
-        hedge_exchange=hedge_exchange,
+        exchange_hedge=exchange_hedge,
         context=context
     )
 
