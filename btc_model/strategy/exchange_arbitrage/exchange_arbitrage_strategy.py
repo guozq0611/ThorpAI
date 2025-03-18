@@ -26,6 +26,9 @@ class CommonParams(NamedTuple):
     """
     order_timeout: int  # 订单超时时间（秒）
     retry_times: int  # 重试次数
+    order_imbalance_threshold: float  # 订单不平衡阈值
+    order_chase_times: int  # 追单次数  
+    imbalance_adjust_times: int  # 残腿调整次数
 
 
 class CapitalLimitParams(NamedTuple):

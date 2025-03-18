@@ -159,10 +159,10 @@ class OrderStatus(Enum):
     CLOSED = "CLOSED"
 
     @property
-    def is_pending(self) -> bool:
+    def is_active(self) -> bool:
         """挂单状态"""
         return self in {OrderStatus.SUBMITTING, 
-                        OrderStatus.SUBMITTED, 
+                        OrderStatus.OPEN, 
                         OrderStatus.CANCELING}
     
     @property
@@ -172,16 +172,7 @@ class OrderStatus(Enum):
                         OrderStatus.CANCELLED,
                         OrderStatus.EXPIRED,
                         OrderStatus.REJECTED}
-    
-    @property
-    def is_failed(self) -> bool:
-        """失败状态"""
-        return self in {OrderStatus.REJECTED}
-    
-    @property
-    def is_canceled(self) -> bool:
-        """取消状态"""
-        return self in {OrderStatus.CANCELLED}
+  
     
 
 

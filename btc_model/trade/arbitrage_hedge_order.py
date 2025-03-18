@@ -2,7 +2,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, List
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 
 from btc_model.core.common.object import OrderData
@@ -28,8 +29,11 @@ class ArbitrageHedgeOrder():
         # 合约腿
         self.leg_swap: List[OrderData] = list()    # 存储合约腿的OrderData对象列表
 
-        self.create_time = datetime.now()
-        self.update_time = datetime.now()
+        # 使用datetime对象记录时间，更清晰直观
+        self.create_time = datetime.now()  # 创建时间
+        self.update_time = datetime.now()  # 更新时间
+
+        self._imbalance_adjust_times = 0    # 残腿调整次数
 
         self.lock = threading.Lock()
 
@@ -81,11 +85,24 @@ class ArbitrageHedgeOrder():
                 volume_traded = sum(order.volume_traded for order in self.leg_swap)
             
             return volume_traded
+        
+    @property
+    def imbalance_adjust_times(self) -> int:
+        """
+        获取残腿调整次数
+        """
+        with self.lock:
+            return self._imbalance_adjust_times
+    
+    @imbalance_adjust_times.setter
+    def imbalance_adjust_times(self, value: int):
+        with self.lock:
+            self._imbalance_adjust_times = value
            
-
-    def is_pending(self) -> bool:
+    @property
+    def is_active(self) -> bool:
         """挂单状态"""
-        return self.leg_spot_1[-1].status.is_pending or self.leg_spot_2[-1].status.is_pending or self.leg_swap[-1].status.is_pending
+        return self.leg_spot_1[-1].status.is_active or self.leg_spot_2[-1].status.is_active or self.leg_swap[-1].status.is_active
     
     @property
     def is_finished(self) -> bool:
@@ -93,11 +110,33 @@ class ArbitrageHedgeOrder():
         return self.leg_spot_1[-1].status.is_finished and self.leg_spot_2[-1].status.is_finished and self.leg_swap[-1].status.is_finished
     
     @property
-    def is_failed(self) -> bool:
-        """失败状态"""
-        return self.leg_spot_1[-1].status.is_failed or self.leg_spot_2[-1].status.is_failed or self.leg_swap[-1].status.is_failed
-    
-    @property
     def is_canceled(self) -> bool:
         """取消状态"""
-        return self.leg_spot_1[-1].status.is_canceled or self.leg_spot_2[-1].status.is_canceled or self.leg_swap[-1].status.is_canceled
+        return self.leg_spot_1[-1].status == OrderStatus.CANCELLED or self.leg_spot_2[-1].status == OrderStatus.CANCELLED or self.leg_swap[-1].status == OrderStatus.CANCELLED
+
+    def is_timeout(self, timeout_seconds: float) -> bool:
+        """
+        检查订单是否超时
+        
+        Args:
+            timeout_seconds: 超时时间（秒）
+            
+        Returns:
+            bool: 是否超时
+        """
+        # 计算当前时间与创建时间的差值（秒）
+        elapsed = (datetime.now() - self.create_time).total_seconds()
+        return elapsed > timeout_seconds
+    
+    def is_imbalance_adjust_times_limit(self, limit: int) -> bool:
+        """
+        检查残腿调整次数是否超过限制
+
+        @params:
+            limit: 限制次数
+
+        @return:
+            bool: 是否超过限制
+        """
+        with self.lock:
+            return self._imbalance_adjust_times >= limit

@@ -123,9 +123,11 @@ SETTINGS: Dict[str, Any] = {
     # 套利策略参数
     # ------------------------------------------------------  
     "strategy.exchange_arbitrage.common_params": {
-        "order_timeout": 10,
-        "retry_times": 3,
-
+        "order_timeout": 10,    # 订单超时时间, 超时后撤单重新下单
+        "retry_times": 3,       # 重试次数
+        "order_imbalance_threshold": 0.0001,    # 残腿阈值
+        "order_chase_times": 3, # 追单次数
+        "imbalance_adjust_times": 5, # 残腿调整次数
     },
     
     "strategy.exchange_arbitrage.capital_limit_params": {
