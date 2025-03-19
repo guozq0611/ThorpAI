@@ -118,6 +118,8 @@ class Direction(Enum):
     """
     Direction of order/trade.
     """
+    NONE = "NONE"
+    
     BUY = "BUY"
     SELL = "SELL"
 

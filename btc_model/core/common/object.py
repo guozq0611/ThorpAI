@@ -76,6 +76,28 @@ class OrderData:
         """
         return self.status in [OrderStatus.CLOSED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED]
 
+    def copy_from(self, other: "OrderData") -> None:
+        """
+        从另一个OrderData对象复制所有属性
+        
+        Args:
+            other: 要复制属性的OrderData对象
+        """
+        self.order_id = other.order_id
+        self.client_id = other.client_id
+        self.symbol = other.symbol
+        self.exchange = other.exchange
+        self.order_type = other.order_type
+        self.direction = other.direction
+        self.offset = other.offset
+        self.price = other.price
+        self.volume = other.volume
+        self.volume_traded = other.volume_traded
+        self.status = other.status
+        self.datetime = other.datetime
+        self.reference = other.reference
+        self.create_time = other.create_time
+
     def create_cancel_request(self) -> "CancelRequest":
         """
         创建取消请求对象
@@ -119,11 +141,11 @@ class OrderData:
 
 @dataclass
 class OrderRequest:
-
+    client_id: str
     symbol: str
     exchange: Exchange
     direction: Direction
-    type: OrderType
+    order_type: OrderType
     volume: float
     price: float = 0
     offset: Offset = Offset.NONE
@@ -138,7 +160,7 @@ class OrderRequest:
             symbol=self.symbol,
             exchange=self.exchange,
             order_id=orderid,
-            order_type=self.type,
+            order_type=self.order_type,
             direction=self.direction,
             offset=self.offset,
             price=self.price,
@@ -174,6 +196,16 @@ class PositionData:
     frozen: float = 0
     entry_price: float = 0
 
+    def copy_from(self, other: "PositionData") -> None:
+        """
+        从另一个PositionData对象复制所有属性
+        """
+        # self.symbol = other.symbol
+        # self.exchange = other.exchange
+        # self.direction = other.direction
+        self.volume = other.volume
+        self.frozen = other.frozen
+        self.entry_price = other.entry_price
 
 
 @dataclass

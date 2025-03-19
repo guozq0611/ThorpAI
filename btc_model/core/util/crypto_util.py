@@ -12,28 +12,28 @@ from btc_model.core.common.const import Exchange, OrderStatus, Direction, OrderT
 
 # Order type map
 ORDERTYPE_2CCXT: dict[OrderType, str] = {
-    OrderType.LIMIT: "LIMIT",
-    OrderType.MARKET: "MARKET"
+    OrderType.LIMIT: "limit",
+    OrderType.MARKET: "market"
 }
 ORDERTYPE_FROM_CCXT: dict[str, OrderType] = {v: k for k, v in ORDERTYPE_2CCXT.items()}
 
 # Direction map
 DIRECTION_2CCXT: dict[Direction, str] = {
-    Direction.BUY: "BUY",
-    Direction.SELL: "SELL",
-    Direction.LONG: "LONG",
-    Direction.SHORT: "SHORT",
+    Direction.BUY: "buy",
+    Direction.SELL: "sell",
+    Direction.LONG: "long",
+    Direction.SHORT: "short",
   
 }
 DIRECTION_FROM_CCXT: dict[str, Direction] = {v: k for k, v in DIRECTION_2CCXT.items()}
 
 # Order status map
 STATUS_2CCXT: dict[OrderStatus, str] = {
-    OrderStatus.OPEN: "OPEN",
-    OrderStatus.CLOSED: "CLOSED",
-    OrderStatus.CANCELLED: "CANCELED",
-    OrderStatus.REJECTED: "REJECTED",
-    OrderStatus.EXPIRED: "EXPIRED"
+    OrderStatus.OPEN: "open",
+    OrderStatus.CLOSED: "closed",
+    OrderStatus.CANCELLED: "canceled",
+    OrderStatus.REJECTED: "rejected",
+    OrderStatus.EXPIRED: "expired"
 }
 STATUS_FROM_CCXT: dict[str, OrderStatus] = {v: k for k, v in STATUS_2CCXT.items()}
 
@@ -1243,10 +1243,10 @@ class CryptoUtil:
         exchange = EXCHANGE_FROM_CCXT[ccxt_exchange.id]
 
         # 确定订单方向
-        direction = DIRECTION_FROM_CCXT[exchange_order["side"].upper()]
+        direction = DIRECTION_FROM_CCXT[exchange_order["side"]]
                 
         # 确定订单类型
-        order_type = ORDERTYPE_FROM_CCXT[exchange_order["type"].upper()]
+        order_type = ORDERTYPE_FROM_CCXT[exchange_order["type"]]
                 
 
 
@@ -1278,6 +1278,7 @@ class CryptoUtil:
                 
         # 获取订单ID
         order_id = exchange_order.get("id", "")
+        client_id = exchange_order.get("clientOrderId", "")
         
         # 获取交易对
         symbol = exchange_order.get("symbol", "")
@@ -1287,7 +1288,7 @@ class CryptoUtil:
         volume = float(exchange_order.get("amount", 0))
         volume_traded = float(exchange_order.get("filled", 0))
 
-        status = STATUS_FROM_CCXT[exchange_order['status'].upper()]
+        status = STATUS_FROM_CCXT[exchange_order['status']]
         
         # 获取时间
         dt = None
@@ -1302,6 +1303,7 @@ class CryptoUtil:
         # 创建OrderData对象
         order_data = OrderData(
             order_id=order_id,
+            client_id=client_id,
             symbol=symbol,
             exchange=exchange,
             order_type=order_type,

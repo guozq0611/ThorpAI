@@ -379,9 +379,69 @@ def load_pairs():
 
     return pairs
 
+def test_exchange_arbitrage_strategy():
+    exchanges = setup_exchanges()
+    exchange_1 = exchanges['exchange_1']
+    exchange_2 = exchanges['exchange_2']
+    exchange_hedge = exchanges['exchange_hedge']
+
+    pairs = load_pairs()
+    
+    swap_symbols = CryptoUtil.get_perpetual_markets(exchange=hedge_exchange)
+    swap_bases = {market_data['base'] for market_data in swap_symbols.values()}
+    pairs = [pair for pair in pairs if pair['quote'] == 'USDT' and pair['base'] in swap_bases]
+    
+
+    # 初始化市场数据管理器
+    md = MarketDataService()
+    # 添加交易所
+    for exchange_id, exchange in exchanges.items():
+        md.add_exchange(exchange_id, exchange)
+
+    # 订阅行情数据
+    spot_symbols_to_watch = ['LSK/USDT']
+    swap_symbols_to_watch = ['LSK/USDT:USDT']
+    
+    # 订阅现货订单簿
+    for symbol in spot_symbols_to_watch:
+        md.subscribe_orderbook('exchange_1', symbol)
+        md.subscribe_orderbook('exchange_2', symbol)
+        
+
+    # 订阅合约订单簿和资金费率
+    for symbol in swap_symbols_to_watch:
+        md.subscribe_orderbook('exchange_hedge', symbol)
+        md.subscribe_funding_rate('exchange_hedge', symbol)
+    
+    # 启动市场数据订阅
+    md.start()
+
+    Logger.info("等待行情数据开始流入...")
+
+    time.sleep(30)
+
+    
+    context = Context.get_instance()
+    context.market_data_service = md
+    
+
+
+
+
+    try:
+        while True:
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        Logger.info("程序被用户中断")
+    finally:
+        # 停止市场数据订阅
+        md.stop()
+        Logger.info("程序已退出")
+
 if __name__ == "__main__":
     pairs = load_pairs()
-    # pairs = [pair for pair in pairs if pair['base'] == 'DOGGE']
+
 
 
 
@@ -391,18 +451,12 @@ if __name__ == "__main__":
     exchange_2 = exchanges['exchange_2']
     hedge_exchange = exchanges['exchange_hedge']
 
-    filtered_pairs = []
+    # 获取永续合约市场信息
     swap_symbols = CryptoUtil.get_perpetual_markets(exchange=hedge_exchange)
-    swap_symbols = pd.DataFrame(swap_symbols).transpose()[['symbol', 'quote', 'base']].reset_index(drop=True)
-    # 使用列表推导式同时过滤 base 和 quote
-    filtered_pairs = [pair for pair in pairs 
-                    if pair['quote'] == 'USDT' and pair['base'] in swap_symbols['base'].values]
-    
-    pairs = filtered_pairs
+    swap_bases = {market_data['base'] for market_data in swap_symbols.values()}
+    pairs = [pair for pair in pairs if pair['quote'] == 'USDT' and pair['base'] in swap_bases]
 
-    # 测试用少量的币种
-    pairs = [pair for pair in pairs if pair['base'] in ['DOGE', 'LSK', 'XRP', 'BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'LINK', 'BCH', 'XLM', 'XMR', 'XRP', 'BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'LINK', 'BCH', 'XLM', 'XMR']]
-
+   
     # 初始化Context单例
     context = Context.get_instance()
     
