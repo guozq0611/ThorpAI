@@ -12,6 +12,7 @@ from btc_model.core.util.crypto_util import CryptoUtil
 class MarketDataService:
     """
     市场数据管理类，负责订阅和管理各交易所的行情数据
+    考虑性能问题, 仅使用websocket获取订单簿
     """
     _instance = None
     _lock = threading.Lock()
@@ -354,7 +355,41 @@ class MarketDataService:
                 Logger.error(f"subscription worker exception: {str(e)}")
                 await asyncio.sleep(3)  # 出错后等待3秒再重试
     
-   
+    async def _fetch_orderbook_for_symbols(self, exchange_id: str, symbols: List[str]) -> None:
+        """优先使用WEBSOCKET获取订单簿"""
+
+        try:
+            # 优先使用异步交易所的fetch_order_book方法
+            if exchange_id in self.pro_exchanges and not self.pro_exchanges[exchange_id].isSandboxModeEnabled:
+                pro_exchange = self.pro_exchanges[exchange_id]
+                orderbook = await asyncio.wait_for(pro_exchange.watch_order_book_for_symbols(symbols, limit=5), 30)
+            else:
+                # REST API 获取订单簿, 需要等待1秒
+                time.sleep(1)
+                # 如果没有异步交易所实例，使用同步交易所
+                exchange = self.exchanges[exchange_id]
+                orderbook = exchange.fetch_order_book_for_symbols(symbols)
+                
+            
+            with self.lock:
+                self.orderbooks[key] = {
+                    'bids': orderbook['bids'],
+                    'asks': orderbook['asks'],
+                    'timestamp': orderbook['timestamp'] or int(time.time() * 1000)
+                }
+            #Logger.info(f"orderbook updated: {key[:30]:<30}, bid1:{orderbook['bids'][0] if orderbook['bids'] else None} ask1:{orderbook['asks'][0] if orderbook['asks'] else None}")
+            
+            
+        except Exception as e:
+            Logger.error(f"使用fetch_order_book获取订单簿失败: {key}, 错误: {str(e)}")
+            # 确保有一个空的数据结构
+            with self.lock:
+                if key not in self.orderbooks:
+                    self.orderbooks[key] = {'bids': [], 'asks': [], 'timestamp': int(time.time() * 1000)}
+            
+            # 出错后等待一段时间再重试
+            await asyncio.sleep(5)
+    
     
     async def _fetch_orderbook(self, exchange_id: str, symbol: str) -> None:
         """使用REST API获取订单簿"""
@@ -365,9 +400,12 @@ class MarketDataService:
                 pro_exchange = self.pro_exchanges[exchange_id]
                 orderbook = await asyncio.wait_for(pro_exchange.watch_order_book(symbol, limit=5), 30)
             else:
+                # REST API 获取订单簿, 需要等待1秒
+                time.sleep(1)
                 # 如果没有异步交易所实例，使用同步交易所
                 exchange = self.exchanges[exchange_id]
                 orderbook = exchange.fetch_order_book(symbol)
+                
             
             with self.lock:
                 self.orderbooks[key] = {
@@ -377,8 +415,7 @@ class MarketDataService:
                 }
             #Logger.info(f"orderbook updated: {key[:30]:<30}, bid1:{orderbook['bids'][0] if orderbook['bids'] else None} ask1:{orderbook['asks'][0] if orderbook['asks'] else None}")
             
-            # 等待一段时间再次获取（模拟订阅）
-            await asyncio.sleep(0.5)  # 每5秒更新一次
+            
         except Exception as e:
             Logger.error(f"使用fetch_order_book获取订单簿失败: {key}, 错误: {str(e)}")
             # 确保有一个空的数据结构

@@ -226,14 +226,24 @@ class ArbitragePositionManager(PositionManager):
                 Logger.warning(f"对冲仓位准备就绪(多头与空头不平衡), 不执行套利交易: {symbol_id}")
                 return None
             
-            
-            if self.exchange_1.id == exchange_pair[0].value:
+            # 设置买入交易所和卖出交易所--》self.exchange_1、self.exchange_2 的买卖方向
+            if self.exchange_1.id == exchange_pair[0].id:
                leg_1_direction = Direction.BUY
                leg_2_direction = Direction.SELL
             else:
                 leg_1_direction = Direction.SELL
                 leg_2_direction = Direction.BUY
 
+            # 检查现货腿1持仓是否足够
+            if leg_1_direction == Direction.SELL and arbitrage_position.spot_1_position < volume:
+                Logger.warning(f"现货腿1持仓不足, 不执行套利交易: {symbol_id}")
+                return None
+            
+            # 检查现货腿2持仓是否足够
+            if leg_2_direction == Direction.SELL and arbitrage_position.spot_2_position < volume:
+                Logger.warning(f"现货腿2持仓不足, 不执行套利交易: {symbol_id}")
+                return None
+           
 
             # 生成一个本地订单ID（用于套利整体）
             arb_order_id = SerialnoUtil.create_serial_no(prefix='', length=20)
@@ -895,6 +905,10 @@ def test_arbitrage_position_manager():
     exchange_2 = exchanges['exchange_2']
     exchange_hedge = exchanges['exchange_hedge']
 
+    # 预加载交易所基础信息到缓存中
+    from btc_model.core.market.exchange_info_cache import preload_exchange_info
+    preload_exchange_info(exchanges, async_load=True)
+
     pairs = load_pairs()
     # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
 
@@ -981,7 +995,10 @@ def test_arbitrage_position_manager():
                     arbitrage_position.spot_2_position > 0 and \
                         arbitrage_position.swap_position > 0 and \
                             abs(arbitrage_position.net_position) < 1:
-                
+                position_manager.execute_arbitrage(symbol_id='LSK/USDT',
+                                                   volume=10,
+                                                   exchange_pair=(exchange_1, exchange_2)
+                                                   )
                 
                 
             time.sleep(1)

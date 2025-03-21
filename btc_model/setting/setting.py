@@ -109,6 +109,12 @@ SETTINGS: Dict[str, Any] = {
     "update_manager.indicator.use_exchange": 'OKX',
     "update_manager.indicator.symbols": ['BTC-USDT', 'ETH-USDT', 'SOL-USDT', 'SOL-USDT'],
 
+    # setting mysql in ~/.thorpai/setting/setting.local.json
+    "database.mysql.host": "",
+    "database.mysql.port": 3306,
+    "database.mysql.user": "",
+    "database.mysql.password": "",
+    "database.mysql.database": "",
 
     "database.uri": "",
     "database.name": "",

@@ -284,11 +284,11 @@ class ExchangeArbitrageStrategy:
             Logger.info("策略执行结束")
 
 
-def setup_exchanges():
+def setup_exchanges(sandbox: bool = True):
 
     """设置交易所实例"""
     # 初始化币安交易所
-    setting = get_settings('cex.sandbox.binance.spot')
+    setting = get_settings('cex.sandbox.binance.spot') if sandbox else get_settings('cex.binance')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
 
@@ -309,10 +309,10 @@ def setup_exchanges():
     }
 
     exchange_1 = ccxt.binance(params_1)
-    exchange_1.set_sandbox_mode(True)
+
 
      # 初始化 OKX 交易所
-    setting = get_settings('cex.sandbox.okx')
+    setting = get_settings('cex.sandbox.okx') if sandbox else get_settings('cex.okx')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
     passphrase = setting['passphrase']
@@ -333,11 +333,11 @@ def setup_exchanges():
         'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_2 = ccxt.okx(params_2)
-    exchange_2.set_sandbox_mode(True)
+ 
 
 
     # 初始化币安合约交易所
-    setting = get_settings('cex.sandbox.binance.swap')
+    setting = get_settings('cex.sandbox.binance.swap') if sandbox else get_settings('cex.binance')
     apikey = setting['apikey']
     secretkey = setting['secretkey']
 
@@ -356,7 +356,11 @@ def setup_exchanges():
         'ws_proxy': get_settings('common')['proxies'].get('http', None)
     }
     exchange_hedge = ccxt.binance(params_hedge)
-    exchange_hedge.set_sandbox_mode(True)
+
+    if sandbox:
+        exchange_1.set_sandbox_mode(True)
+        exchange_2.set_sandbox_mode(True)
+        exchange_hedge.set_sandbox_mode(True)
 
    
     return {
@@ -386,7 +390,7 @@ def test_exchange_arbitrage_strategy():
     exchange_hedge = exchanges['exchange_hedge']
 
     pairs = load_pairs()
-    
+
     swap_symbols = CryptoUtil.get_perpetual_markets(exchange=hedge_exchange)
     swap_bases = {market_data['base'] for market_data in swap_symbols.values()}
     pairs = [pair for pair in pairs if pair['quote'] == 'USDT' and pair['base'] in swap_bases]
