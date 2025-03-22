@@ -50,6 +50,60 @@ class CryptoUtil:
     加密货币工具类
     """
     @staticmethod
+    def create_pro_exchange(exchange: ccxt.Exchange) -> tuple[Optional[ccxt.pro.Exchange], str]:
+        """根据普通交易所实例创建对应的 ccxtpro 实例"""
+        try:
+            exchange_id = exchange.id
+            
+            if hasattr(exchange, 'proxies'):
+                proxies = exchange.proxies
+            else:
+                proxies = {'http': None, 'https': None}
+            
+            # 基础配置
+            config = {
+                'enableRateLimit': True,
+                'apiKey': exchange.apiKey,
+                'secret': exchange.secret,
+                'proxies': {
+                    'http': proxies['http'],                 
+                    'https': proxies['https'],
+                },
+                'aiohttp_proxy': proxies['http'],
+                'ws_proxy': proxies['http']
+            }
+    
+            # 添加特定交易所的配置
+            if hasattr(exchange, 'password'):
+                config['password'] = exchange.password
+            
+            config['options'] = {}
+            # 复制交易类型设置
+            if hasattr(exchange, 'options') and 'defaultType' in exchange.options:
+                config['options']['defaultType'] = exchange.options['defaultType']
+            
+            # 创建异步交易所实例
+            pro_exchange: ccxt.pro.Exchange = getattr(ccxt.pro, exchange_id)(config)
+
+            if exchange.isSandboxModeEnabled:
+                pro_exchange.set_sandbox_mode(True)
+                msg =  f'创建异步交易所实例成功: {exchange_id}, 使用沙盒模式'
+            else:
+                msg = f'创建异步交易所实例成功: {exchange_id}'
+
+            # 直接从原来交易所实例中获取市场信息，避免重复加载消耗时间
+            # pro_exchange.load_markets()
+            pro_exchange.markets = exchange.markets
+            pro_exchange.currencies = exchange.currencies
+            pro_exchange.symbols = exchange.symbols
+         
+
+            return pro_exchange, msg
+        except Exception as e:
+            return None, f'创建异步交易所实例失败: {exchange_id}, 错误: {str(e)}'
+
+        
+    @staticmethod
     def get_crypto_currency_list(exchange: ccxt.Exchange):
         """获取加密货币列表"""
         return exchange.load_markets()
@@ -512,7 +566,11 @@ class CryptoUtil:
             }
         """
         try:
-            markets = exchange.load_markets()
+            if exchange.markets is None or len(exchange.markets) == 0:
+                markets = exchange.load_markets()
+            else:
+                markets = exchange.markets
+
             perpetual_markets = {}
             
             for symbol, market in markets.items():

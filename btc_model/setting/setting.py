@@ -30,6 +30,9 @@ SETTINGS: Dict[str, Any] = {
     "email.sender": "",
     "email.receiver": "",
 
+    # 配置需要订阅的市场数据
+    "market_data_service.exchanges": ['binance', 'okx'],
+
     "trade.live_mode": True,
 
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!

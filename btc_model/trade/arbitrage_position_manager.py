@@ -905,10 +905,6 @@ def test_arbitrage_position_manager():
     exchange_2 = exchanges['exchange_2']
     exchange_hedge = exchanges['exchange_hedge']
 
-    # 预加载交易所基础信息到缓存中
-    from btc_model.core.market.exchange_info_cache import preload_exchange_info
-    preload_exchange_info(exchanges, async_load=True)
-
     pairs = load_pairs()
     # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
 
