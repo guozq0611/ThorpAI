@@ -15,7 +15,7 @@ import traceback
 import json
 import copy
 import pymysql
-#TODO: 需要重构，使用异步API获取行情数据(watch_ticker, watch_orderbook, watch_funding_rate)
+
 
 class MarketDataService:
     """
@@ -50,17 +50,23 @@ class MarketDataService:
         # 存储订阅的行情数据
         self.orderbooks: Dict[str, Dict[str, Any]] = {}
         self.funding_rates: Dict[str, Dict[str, Any]] = {}
+        self.tickers: Dict[str, Dict[str, Any]] = {}
+        self.bbo_prices: Dict[str, Dict[str, Any]] = {}    # best bid offer prices
         
         # 订阅状态管理
         self.subscribed_symbols: Dict[str, Set[str]] = {
             'orderbook': set(),
-            'funding_rate': set()
+            'funding_rate': set(),
+            'ticker': set(),
+            'bbo': set()
         }
         
         # 按交易所存储订阅的交易对 - 便于查询特定交易所的所有订阅
         self.subscribed_by_exchange: Dict[str, Dict[str, Set[str]]] = {
             'orderbook': {},       # 格式: {'binance': {'BTC/USDT', 'ETH/USDT'}, 'okx': {...}}
-            'funding_rate': {}     # 格式同上
+            'funding_rate': {},     # 格式同上
+            'ticker': {},           # 格式同上
+            'bbo': {}               # 格式同上
         }
         
         # 线程和锁
@@ -139,6 +145,35 @@ class MarketDataService:
             self.perpetual_exchanges[exchange_id] = self.pro_exchanges[exchange_id]
             Logger.info(f"设置永续合约交易所: {exchange_id}")   
 
+    def subscribe_bbo(self, exchange_id: str, symbol: str) -> None:
+        """订阅特定交易所和交易对的bbo"""
+        key = f"{exchange_id}:{symbol}"
+        with self.lock:
+            self.subscribed_symbols['bbo'].add(key)
+            
+            # 同时更新按交易所分组的订阅信息
+            if exchange_id not in self.subscribed_by_exchange['bbo']:
+                self.subscribed_by_exchange['bbo'][exchange_id] = set()
+            self.subscribed_by_exchange['bbo'][exchange_id].add(symbol)
+            
+            # 初始化空数据结构
+            self.bbo_prices[key] = {'bid_price': 0, 'bid_volume': 0, 'ask_price': 0, 'ask_volume': 0, 'timestamp': 0}
+        Logger.info(f"subscribe bbo: {key}")
+
+    def subscribe_ticker(self, exchange_id: str, symbol: str) -> None:
+        """订阅特定交易所和交易对的ticker"""
+        key = f"{exchange_id}:{symbol}"
+        with self.lock:
+            self.subscribed_symbols['ticker'].add(key)
+            
+            # 同时更新按交易所分组的订阅信息
+            if exchange_id not in self.subscribed_by_exchange['ticker']:
+                self.subscribed_by_exchange['ticker'][exchange_id] = set()
+            self.subscribed_by_exchange['ticker'][exchange_id].add(symbol)
+            
+            # 初始化空数据结构
+            self.tickers[key] = {'ticker': [], 'timestamp': 0}
+        Logger.info(f"subscribe ticker: {key}")
 
     def subscribe_orderbook(self, exchange_id: str, symbol: str) -> None:
         """订阅特定交易所和交易对的订单簿"""
@@ -176,6 +211,12 @@ class MarketDataService:
         key = f"{exchange_id}:{symbol}"
         with self.lock:
             return self.orderbooks.get(key, {'bids': [], 'asks': [], 'timestamp': 0})
+        
+    def get_ticker(self, exchange_id: str, symbol: str) -> Dict[str, Any]:
+        """获取特定交易所和交易对的ticker"""
+        key = f"{exchange_id}:{symbol}"
+        with self.lock:
+            return self.tickers.get(key, {'ticker': [], 'timestamp': 0})
     
 
     def get_funding_rate(self, exchange_id: str, symbol: str) -> Dict[str, Any]:
@@ -365,38 +406,66 @@ class MarketDataService:
                 # 创建所有订阅任务
                 new_tasks = []
 
-                # 处理订单簿数据订阅
+                # # 处理订单簿数据订阅
+                # for exchange_id, exchange in list(self.pro_exchanges.items()):
+                #     # 检查此交易所是否已有活跃的订单簿订阅任务
+                #     task_key = f"orderbook_spot:{exchange_id}"
+                #     if task_key in subscription_tasks and not subscription_tasks[task_key].done():
+                #         # 如果任务仍在运行，跳过创建新任务
+                #         continue   
+          
+                #     symbols = list(self.get_subscribed_symbols_by_exchange('orderbook', 'spot', exchange_id))
+                #     if symbols:
+                #         # 创建批量获取订单簿的任务
+                #         task = asyncio.create_task(self._watch_orderbook_for_symbols(exchange, symbols))
+                #         subscription_tasks[f"{task_key}:spot"] = task
+                #         new_tasks.append(task)
+
+
+                # for exchange_id, exchange in list(self.perpetual_exchanges.items()):
+                #     # 检查此交易所是否已有活跃的订单簿订阅任务
+                #     task_key = f"orderbook_swap:{exchange_id}"
+                #     if task_key in subscription_tasks and not subscription_tasks[task_key].done():
+                #         # 如果任务仍在运行，跳过创建新任务
+                #         continue   
+          
+                #     symbols = list(self.get_subscribed_symbols_by_exchange('orderbook', 'swap', exchange_id))
+                #     if symbols:
+                #         # 创建批量获取订单簿的任务
+                #         task = asyncio.create_task(self._watch_orderbook_for_symbols(exchange, symbols))
+                #         subscription_tasks[f"{task_key}:swap"] = task
+                #         new_tasks.append(task)
+
+
+                # 处理数据订阅
                 for exchange_id, exchange in list(self.pro_exchanges.items()):
                     # 检查此交易所是否已有活跃的订单簿订阅任务
-                    task_key = f"orderbook_spot:{exchange_id}"
+                    task_key = f"bbo_spot:{exchange_id}"
                     if task_key in subscription_tasks and not subscription_tasks[task_key].done():
                         # 如果任务仍在运行，跳过创建新任务
                         continue   
           
-                    symbols = list(self.get_subscribed_symbols_by_exchange('orderbook', 'spot', exchange_id))
+                    symbols = list(self.get_subscribed_symbols_by_exchange('bbo', 'spot', exchange_id))
                     if symbols:
                         # 创建批量获取订单簿的任务
-                        task = asyncio.create_task(self._watch_orderbook_for_symbols(exchange, symbols))
+                        task = asyncio.create_task(self._watch_bbo_prices(exchange, symbols))
                         subscription_tasks[f"{task_key}:spot"] = task
                         new_tasks.append(task)
 
 
                 for exchange_id, exchange in list(self.perpetual_exchanges.items()):
                     # 检查此交易所是否已有活跃的订单簿订阅任务
-                    task_key = f"orderbook_swap:{exchange_id}"
+                    task_key = f"bbo_swap:{exchange_id}"
                     if task_key in subscription_tasks and not subscription_tasks[task_key].done():
                         # 如果任务仍在运行，跳过创建新任务
                         continue   
           
-                    symbols = list(self.get_subscribed_symbols_by_exchange('orderbook', 'swap', exchange_id))
+                    symbols = list(self.get_subscribed_symbols_by_exchange('bbo', 'swap', exchange_id))
                     if symbols:
                         # 创建批量获取订单簿的任务
-                        task = asyncio.create_task(self._watch_orderbook_for_symbols(exchange, symbols))
+                        task = asyncio.create_task(self._watch_bbo_prices(exchange, symbols))
                         subscription_tasks[f"{task_key}:swap"] = task
                         new_tasks.append(task)
-
-
-
                 
                 
                 # # 处理资金费率数据订阅
@@ -449,10 +518,47 @@ class MarketDataService:
             except Exception as e:
                 Logger.error(f"subscription worker exception: {str(e)}")
                 await asyncio.sleep(3)  # 出错后等待3秒再重试
+
+
+     
+    async def _watch_bbo_prices(self, exchange: ccxtpro.Exchange, symbols: List[str]) -> None:
+        """优先使用WEBSOCKET获取订单簿"""
+        try:
+
+            bbo_prices = await asyncio.wait_for(exchange.watch_bids_asks(symbols),timeout=30)
+            for symbol, bbo in bbo_prices.items():
+                key = f"{exchange.id}:{symbol}"
+                with self.lock:
+                    self.bbo_prices[key] = {
+                        'bid_price': bbo['bid'],
+                        'bid_volume': bbo['bidVolume'],
+                        'ask_price': bbo['ask'],
+                        'ask_volume': bbo['askVolume'],
+                        'timestamp': bbo['timestamp']
+                    }
+
+                    Logger.info(f"bbo updated, {key}, bid:{self.bbo_prices[key]['bid_price'] if self.bbo_prices[key]['bid_price'] else 'N/A'}, ask:{self.bbo_prices[key]['ask_price'] if self.bbo_prices[key]['ask_price'] else 'N/A'}")
+
+        except Exception as e:
+            Logger.error(f"使用watch_bbo_prices获取bbo失败, 交易所: {exchange.id}, 错误: {str(e)}")
+            # 确保有一个空的数据结构
+            with self.lock:
+                for symbol in symbols:
+                    key = f"{exchange.id}:{symbol}"
+                    if key not in self.bbo_prices:
+                        self.bbo_prices[key] = {       
+                            'bidPrice': 0,
+                            'bidVolume': 0,
+                            'askPrice': 0,
+                            'askVolume': 0,
+                            'timestamp': int(time.time() * 1000)
+                        }
+    
     
     async def _watch_orderbook_for_symbols(self, exchange: ccxtpro.Exchange, symbols: List[str]) -> None:
         """优先使用WEBSOCKET获取订单簿"""
         try:
+
       
             orderbook = await asyncio.wait_for(
                                 exchange.watch_order_book_for_symbols(symbols, limit=10),
@@ -561,6 +667,23 @@ class MarketDataService:
         try:
             try:
                 with self.db_engine.connect() as conn:
+                    sql = '''
+                    CREATE TABLE IF NOT EXISTS bbo_snapshot (
+                        exchange_id VARCHAR(50) NOT NULL,
+                        symbol VARCHAR(50) NOT NULL,
+                        datetime DATETIME NOT NULL,
+                        bid_price DOUBLE NOT NULL,
+                        bid_volume DOUBLE NOT NULL,
+                        ask_price DOUBLE NOT NULL,
+                        ask_volume DOUBLE NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (exchange_id, symbol)
+                    )
+                    '''
+                   
+                    conn.execute(text(sql))
                     # 创建最新订单簿表 - 使用复合主键来支持UPSERT
                     sql = '''
                     CREATE TABLE IF NOT EXISTS orderbook_snapshot (
@@ -631,11 +754,23 @@ class MarketDataService:
         while self.persistence_thread_running:
             try:
                 # 批量存储需要的数据
+                bbo_data_to_save = []
                 orderbook_data_to_save = []
                 funding_rate_data_to_save = []
                 
                 # 使用锁保护，但只获取必要的数据，不做深拷贝
                 with self.lock:
+                    for key, bbo in self.bbo_prices.items():
+                        entry = {
+                            'key': key,
+                            'timestamp': bbo.get('timestamp', 0),
+                            'bid_price': bbo.get('bid_price', 0),
+                            'bid_volume': bbo.get('bid_volume', 0),
+                            'ask_price': bbo.get('ask_price', 0),
+                            'ask_volume': bbo.get('ask_volume', 0)
+                        }
+                        bbo_data_to_save.append(entry)
+
                     for key, orderbook in self.orderbooks.items():
                         # 只获取有足够深度的订单簿
                         bids = orderbook.get('bids', [])
@@ -664,6 +799,48 @@ class MarketDataService:
                 current_timestamp = int(time.time() * 1000)
                 
                 with self.db_engine.connect() as conn:
+                    for entry in bbo_data_to_save:
+                        key = entry['key']
+                        exchange_id, symbol = key.split(':', 1)
+                        timestamp = entry['timestamp'] or current_timestamp
+                        
+                        # 将毫秒时间戳转换为datetime对象
+                        dt = datetime.datetime.fromtimestamp(timestamp / 1000.0)    
+
+                        # 使用命名参数的SQL
+                        sql_query = """
+                        INSERT INTO bbo_snapshot
+                        (exchange_id, symbol, datetime, bid_price, bid_volume, ask_price, ask_volume, timestamp, created_at, updated_at)
+                        VALUES (
+                        :exchange_id, :symbol, :datetime, :bid_price, :bid_volume, :ask_price, :ask_volume, :timestamp, NOW(), NOW())   
+                        ON DUPLICATE KEY UPDATE 
+                        datetime = :datetime,
+                        timestamp = :timestamp,
+                        bid_price = :bid_price,
+                        bid_volume = :bid_volume,
+                        ask_price = :ask_price,
+                        ask_volume = :ask_volume,
+                        updated_at = NOW()  
+                        """
+                        
+                        # 准备参数字典
+                        params = {
+                            'exchange_id': exchange_id,
+                            'symbol': symbol,   
+                            'datetime': dt,
+                            'timestamp': timestamp,
+                            'bid_price': entry['bid_price'],
+                            'bid_volume': entry['bid_volume'],
+                            'ask_price': entry['ask_price'],
+                            'ask_volume': entry['ask_volume'],
+                        }
+
+                        try:
+                            # 执行SQL
+                            conn.execute(text(sql_query), params)
+                        except Exception as sql_error:
+                            Logger.error(f"保存BBO数据失败 {key}: {str(sql_error)}")
+
                     # 保存订单簿数据 - 使用命名参数
                     for entry in orderbook_data_to_save:
                         key = entry['key']
@@ -844,7 +1021,7 @@ class MarketDataService:
             return symbols
 
    
-def subscribe_market_data(pairs, market_data_service):
+def subscribe_market_data(pairs, market_data_service: MarketDataService):
         """
         订阅交易对的行情数据
         """
@@ -861,10 +1038,12 @@ def subscribe_market_data(pairs, market_data_service):
 
         for exchange_id in market_data_service.exchanges:
             for symbol in spot_symbols_to_watch:
-                market_data_service.subscribe_orderbook(exchange_id, symbol)
+                #market_data_service.subscribe_orderbook(exchange_id, symbol)
+                market_data_service.subscribe_bbo(exchange_id, symbol)
             for symbol in swap_symbols_to_watch:
-                market_data_service.subscribe_orderbook(exchange_id, symbol)
-                market_data_service.subscribe_funding_rate(exchange_id, symbol)
+                #market_data_service.subscribe_orderbook(exchange_id, symbol)
+                market_data_service.subscribe_ticker(exchange_id, symbol)
+                #market_data_service.subscribe_funding_rate(exchange_id, symbol)
         
         Logger.info(f"已订阅 {len(spot_symbols_to_watch)} 个现货交易对的市场数据")
         Logger.info(f"已订阅 {len(swap_symbols_to_watch)} 个合约交易对的市场数据")
@@ -895,7 +1074,7 @@ if __name__ == "__main__":
     swap_bases = {market_data['base'] for market_data in swap_symbols.values()}
     pairs = [pair for pair in pairs if pair['quote'] == 'USDT' and pair['base'] in swap_bases]
 
-    pairs = pairs[0:60]
+    #pairs = pairs[0:200]
     
     subscribe_market_data(pairs, market_data)
     
@@ -903,6 +1082,7 @@ if __name__ == "__main__":
     # market_data.subscribe_orderbook('binance', 'BTC/USDT')
     # market_data.subscribe_orderbook('binance', 'LSK/USDT')
     # market_data.subscribe_orderbook('binance', 'LSK/USDT:USDT')
+    # market_data.subscribe_bbo('binance', 'LSK/USDT:USDT')
     # market_data.subscribe_orderbook('okx', 'BTC/USDT')
     # market_data.subscribe_orderbook('okx', 'ETH/USDT')
 
