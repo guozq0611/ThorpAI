@@ -15,7 +15,7 @@ from btc_model.setting.setting import get_settings
 
 class ExchangeInfoCache:
     """
-    交易所基础信息缓存类 - MySQL版本
+    交易所基础信息缓存类 
     
     缓存内容：
     1. 币种精度
