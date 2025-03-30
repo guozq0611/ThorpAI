@@ -1,13 +1,15 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Union
 import threading
 from datetime import datetime, timedelta
 import time
 
 
 from btc_model.core.common.object import OrderData, PositionData
-from btc_model.core.common.const import OrderStatus, Exchange, PositionDirection
+from btc_model.core.common.const import Exchange, PositionSide
+from btc_model.core.util.crypto_util import CryptoUtil
+import ccxt
 
 class ArbitragePosition():
     """
@@ -16,17 +18,22 @@ class ArbitragePosition():
     """
     def __init__(self, 
                  symbol_id: str, 
-                 exchange_spot_1: Exchange, 
-                 exchange_spot_2: Exchange, 
-                 exchange_swap: Exchange
+                 exchange_spot_1: Union[ccxt.Exchange, ccxt.pro.Exchange], 
+                 exchange_spot_2: Union[ccxt.Exchange, ccxt.pro.Exchange], 
+                 exchange_swap: Union[ccxt.Exchange, ccxt.pro.Exchange]
                  ):
         self.symbol_id = symbol_id
+        self.symbol_hedge = CryptoUtil.convert_symbol_to_contract(exchange_swap, symbol_id)
+        self.exchange_spot_1 = exchange_spot_1
+        self.exchange_spot_2 = exchange_spot_2
+        self.exchange_swap = exchange_swap
 
         # 现货腿
-        self.leg_spot_1: PositionData = PositionData(symbol_id, exchange_spot_1, PositionDirection.NET)
-        self.leg_spot_2: PositionData = PositionData(symbol_id, exchange_spot_2, PositionDirection.NET)
+        self.leg_spot_1: PositionData = PositionData(symbol_id, exchange_spot_1, PositionSide.NET)
+        self.leg_spot_2: PositionData = PositionData(symbol_id, exchange_spot_2, PositionSide.NET)
         # 合约腿
-        self.leg_swap: PositionData = PositionData(symbol_id, exchange_swap, PositionDirection.SHORT)
+        volume_multiple = exchange_swap.markets[self.symbol_hedge]['contractSize']
+        self.leg_swap: PositionData = PositionData(symbol_id, exchange_swap, PositionSide.SHORT, volume_multiple=volume_multiple)
 
         self.update_time = datetime.now()  # 更新时间
 
@@ -51,7 +58,7 @@ class ArbitragePosition():
     def net_position(self) -> float:
         """净仓位"""
         with self.lock:
-            return self.leg_spot_1.volume + self.leg_spot_2.volume - self.leg_swap.volume
+            return self.leg_spot_1.volume + self.leg_spot_2.volume - self.leg_swap.volume * self.leg_swap.volume_multiple
 
     @property
     def spot_1_position(self) -> float:
@@ -85,3 +92,9 @@ class ArbitragePosition():
     def swap_position(self, value: float):
         with self.lock:
             self.leg_swap.volume = value
+
+    @property
+    def swap_position_notional(self) -> float:
+        """合约仓位价值"""
+        with self.lock:
+            return self.leg_swap.volume * self.leg_swap.volume_multiple

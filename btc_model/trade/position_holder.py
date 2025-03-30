@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict
 
-from btc_model.core.common.const import PositionDirection, Exchange
+from btc_model.core.common.const import PositionSide, Exchange
 from btc_model.core.common.object import PositionData, AccountData
 
 
@@ -11,41 +11,41 @@ class PositionHolder:
     """
     def __init__(self):
         # tuple[Exchange, str, PositionDirection] exchange_id, symbol, direction
-        self.positions: Dict[tuple[Exchange, str, PositionDirection], PositionData] = field(default_factory=dict)
+        self.positions: Dict[tuple[Exchange, str, PositionSide], PositionData] = field(default_factory=dict)
 
     def add_position(
             self, 
             exchange: Exchange, 
-            symbol: str, direction: 
-            PositionDirection, 
+            symbol: str, 
+            side: PositionSide, 
             quantity: float,
             entry_price: float
             ) -> None:
         """添加新的仓位"""
-        if (exchange, symbol, direction) in self.positions:
+        if (exchange, symbol, side) in self.positions:
             # 如果仓位已存在，更新数量和开仓价格
-            existing_position = self.positions[(exchange, symbol, direction)]
+            existing_position = self.positions[(exchange, symbol, side)]
             existing_position.entry_price = (existing_position.entry_price * existing_position.quantity \
                                              + entry_price * quantity) / (existing_position.quantity + quantity)
             existing_position.quantity += quantity
         else:
             # 创建新的仓位
-            self.positions[(exchange, symbol, direction)] = PositionData(symbol, quantity, entry_price)
+            self.positions[(exchange, symbol, side)] = PositionData(symbol, quantity, entry_price)
 
     def remove_position(
             self, 
             exchange: Exchange, 
             symbol: str, 
-            direction: PositionDirection, 
+            side: PositionSide, 
             quantity: float
             ) -> None:
         """移除仓位"""
-        if (exchange, symbol, direction) in self.positions:
-            existing_position = self.positions[(exchange, symbol, direction)]
+        if (exchange, symbol, side) in self.positions:
+            existing_position = self.positions[(exchange, symbol, side)]
             if existing_position.quantity >= quantity:
                 existing_position.quantity -= quantity
                 if existing_position.quantity == 0:
-                    del self.positions[(exchange, symbol, direction)]  # 如果数量为0，删除仓位
+                    del self.positions[(exchange, symbol, side)]  # 如果数量为0，删除仓位
             else:
                 raise ValueError("移除的数量超过现有仓位")
         else:
@@ -55,12 +55,12 @@ class PositionHolder:
             self, 
             exchange: Exchange, 
             symbol: str, 
-            direction: PositionDirection, 
+            side: PositionSide, 
             current_price: float
             ) -> float:
         """获取特定仓位的当前价值"""
-        if (exchange, symbol, direction) in self.positions:
-            return self.positions[(exchange, symbol, direction)].volume * current_price * (-1 if direction == PositionDirection.SHORT else 1)
+        if (exchange, symbol, side) in self.positions:
+            return self.positions[(exchange, symbol, side)].volume * current_price * (-1 if side == PositionSide.SHORT else 1)
         else:
             raise ValueError("该仓位不存在")
 
@@ -74,13 +74,13 @@ class PositionHolder:
         @Note: 合约空头仓位为正、空头仓位为负, 现货多头仓位为正
         """
         total = 0.0
-        for (exchange, symbol, direction), position in self.positions.items():
+        for (exchange, symbol, side), position in self.positions.items():
             if symbol in current_prices:
-                total += position.volume * current_prices[symbol] * (-1 if direction == PositionDirection.SHORT else 1)
+                total += position.volume * current_prices[symbol] * (-1 if side == PositionSide.SHORT else 1)
             else:
                 raise ValueError(f"当前价格中缺少仓位 {symbol} 的价格")
         return total
 
-    def get_positions(self) -> Dict[tuple[Exchange, str, PositionDirection], PositionData]:
+    def get_positions(self) -> Dict[tuple[Exchange, str, PositionSide], PositionData]:
         """获取所有仓位的字典视图"""
         return self.positions

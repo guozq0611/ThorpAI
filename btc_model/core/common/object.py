@@ -18,7 +18,8 @@ from btc_model.core.common.const import (InstrumentType,
                                          OrderStatus,
                                          Offset,
                                          Direction,
-                                         OrderType
+                                         OrderType,
+                                         PositionSide
                                          )
 import time
 
@@ -89,7 +90,7 @@ class OrderData:
         self.exchange = other.exchange
         self.order_type = other.order_type
         self.direction = other.direction
-        self.offset = other.offset
+        self.offset = other.offset if other.offset != Offset.NONE else self.offset
         self.price = other.price
         self.volume = other.volume
         self.volume_traded = other.volume_traded
@@ -190,7 +191,8 @@ class PositionData:
 
     symbol: str
     exchange: Exchange
-    direction: Direction
+    position_side: PositionSide
+    volume_multiple: float = 1  # 合约乘数，现货为1
 
     volume: float = 0
     frozen: float = 0
@@ -220,3 +222,21 @@ class AccountData:
     balance: float = 0
     frozen: float = 0
     available: float = 0
+
+@dataclass
+class BlacklistSymbol:
+    """
+    黑名单货币对
+    """
+    symbol_id: str  # 必须
+    exchange_id: str  = '`' # 空表示所有交易所
+    strategy_name: str = ''  # 空表示所有策略
+    active: bool = True  # 必须
+    reason: str = ''  
+
+    def __init__(self, symbol_id: str, exchange_id: str, strategy_name: str, active: bool, reason: str):
+        self.symbol_id = symbol_id
+        self.exchange_id = exchange_id
+        self.strategy_name = strategy_name
+        self.active = active
+        self.reason = reason

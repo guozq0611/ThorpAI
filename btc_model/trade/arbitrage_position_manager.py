@@ -12,17 +12,16 @@ from btc_model.core.common.const import OrderStatus, EventType
 from btc_model.core.common.object import PositionData
 from btc_model.core.util.log_util import Logger
 from btc_model.core.util.serialno_util import SerialnoUtil
-from btc_model.core.util.crypto_util import CryptoUtil, ORDERTYPE_2CCXT, DIRECTION_2CCXT, EXCHANGE_FROM_CCXT
+from btc_model.core.util.crypto_util import CryptoUtil, ORDERTYPE_2CCXT, DIRECTION_2CCXT, EXCHANGE_FROM_CCXT, POSITION_SIDE_2CCXT
 from btc_model.core.util.crypto_hedge_util import CryptoHedgeUtil
 from btc_model.core.market.market_data_service import MarketDataService
 from btc_model.trade.position_manager import PositionManager
 from btc_model.trade.arbitrage_order import ArbitrageOrder
 from btc_model.trade.arbitrage_hedge_order import ArbitrageHedgeOrder
 from btc_model.trade.arbitrage_position import ArbitragePosition
-from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import ExchangeArbitrageStrategy
 from btc_model.core.common.context import Context
 from btc_model.trade.position_holder import PositionHolder
-from btc_model.core.common.const import PositionDirection, Exchange, Direction, Offset, OrderType
+from btc_model.core.common.const import PositionSide, Exchange, Direction, Offset, OrderType
 from btc_model.core.common.object import OrderData, OrderRequest
 from collections import defaultdict
 from btc_model.core.engine.event_engine import EventEngine, Event
@@ -43,7 +42,8 @@ class ArbitragePositionManager(PositionManager):
 
         self.context = context
         self.market_data_service: MarketDataService = context.market_data_service
- 
+        self.perpetual_markets = context.perpetual_markets
+        
      
         self.active_orders: Dict[str, ArbitrageOrder | ArbitrageHedgeOrder] = {}
         # 当前正在交易中的货币对, 为了防止重复创建仓位, 如果int > 0 表示有正在进行中的货币对
@@ -91,6 +91,16 @@ class ArbitragePositionManager(PositionManager):
                 exchange=EXCHANGE_FROM_CCXT[self.exchange_1.id],
                 client_id=spot_client_id_1
             )
+            spot_order_1.order_type = OrderType.LIMIT
+            spot_order_1.direction = Direction.BUY
+            spot_order_1.offset = Offset.OPEN
+            spot_order_1.price = 0
+            spot_order_1.volume = volume
+            spot_order_1.volume_traded = 0
+            spot_order_1.status = OrderStatus.NONE
+            spot_order_1.datetime = datetime.datetime.now()
+            spot_order_1.reference = ""
+            spot_order_1.create_time = time.time()
 
             # 创建现货腿2的初始订单
             spot_order_2 = OrderData.create_empty(
@@ -98,13 +108,37 @@ class ArbitragePositionManager(PositionManager):
                 exchange=EXCHANGE_FROM_CCXT[self.exchange_2.id],
                 client_id=spot_client_id_2
             )
+            spot_order_2.order_type = OrderType.LIMIT
+            spot_order_2.direction = Direction.BUY
+            spot_order_2.offset = Offset.OPEN
+            spot_order_2.price = 0
+            spot_order_2.volume = volume
+            spot_order_2.volume_traded = 0
+            spot_order_2.status = OrderStatus.NONE
+            spot_order_2.datetime = datetime.datetime.now()
+            spot_order_2.reference = ""
+            spot_order_2.create_time = time.time()
 
             # 创建合约腿的初始订单
-            swap_order = OrderData.create_empty(
-                symbol=symbol_id,
+            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, symbol_id)
+            contract_size = self.exchange_hedge.markets[contract_symbol].get('contractSize', 1)
+
+            swap_order: OrderData = OrderData.create_empty(
+                symbol=contract_symbol,
                 exchange=EXCHANGE_FROM_CCXT[self.exchange_hedge.id], 
                 client_id=swap_client_id
             )
+            
+            swap_order.order_type = OrderType.LIMIT
+            swap_order.direction = Direction.SELL
+            swap_order.offset = Offset.OPEN
+            swap_order.price = 0
+            swap_order.volume = volume * 2 / contract_size
+            swap_order.volume_traded = 0
+            swap_order.status = OrderStatus.NONE
+            swap_order.datetime = datetime.datetime.now()
+            swap_order.reference = ""
+            swap_order.create_time = time.time()
 
             arbitrage_hedge_order = ArbitrageHedgeOrder(
                 order_id=arb_order_id,
@@ -122,9 +156,13 @@ class ArbitragePositionManager(PositionManager):
             try:
                 contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, symbol_id)
 
-                spot_price_1 = self.get_price_safely('exchange_1', symbol_id, side='asks', position=0)
-                spot_price_2 = self.get_price_safely('exchange_2', symbol_id, side='asks', position=0)
-                swap_price = self.get_price_safely('exchange_hedge', contract_symbol, side='bids', position=0)
+                spot_price_1 = self.get_price_safely(self.exchange_1, symbol_id, side='ask')
+                spot_price_2 = self.get_price_safely(self.exchange_2, symbol_id, side='ask')
+                swap_price = self.get_price_safely(self.exchange_hedge, contract_symbol, side='bid')
+
+                if spot_price_1 == 0 or spot_price_2 == 0 or swap_price == 0:
+                    Logger.warning(f"检测到行情异常, 不创建套利仓位: {symbol_id}")
+                    return None
                 
                 # 记录行情数据用于日志
                 Logger.info(
@@ -135,7 +173,7 @@ class ArbitragePositionManager(PositionManager):
                 )
                 
                 # 创建限价单
-                spot_order_1 = self.send_order(
+                updated_spot_order_1 = self.send_spot_order(
                     client_id=spot_client_id_1,
                     exchange=self.exchange_1,
                     symbol_id=symbol_id,
@@ -144,7 +182,10 @@ class ArbitragePositionManager(PositionManager):
                     order_type=OrderType.LIMIT,
                     direction=Direction.BUY
                 )
-                spot_order_2 = self.send_order(
+                if updated_spot_order_1 is not None:
+                    spot_order_1.copy_from(updated_spot_order_1)
+
+                updated_spot_order_2 = self.send_spot_order(
                     client_id=spot_client_id_2,
                     exchange=self.exchange_2,
                     symbol_id=symbol_id,
@@ -153,16 +194,21 @@ class ArbitragePositionManager(PositionManager):
                     order_type=OrderType.LIMIT,
                     direction=Direction.BUY
                 )
-                swap_order = self.send_order(
+                if updated_spot_order_2 is not None:
+                    spot_order_2.copy_from(updated_spot_order_2)
+
+                updated_swap_order = self.send_swap_order(
                     client_id=swap_client_id,
                     exchange=self.exchange_hedge,
                     symbol_id=contract_symbol,
-                    volume=volume,
+                    volume=swap_order.volume_remaining,
                     price=swap_price,
                     order_type=OrderType.LIMIT,
-                    direction=Direction.SELL
+                    direction=Direction.SELL,
+                    offset=Offset.OPEN
                 )
-
+                if updated_swap_order is not None:
+                    swap_order.copy_from(updated_swap_order)    
                     
                 return arbitrage_hedge_order
                 
@@ -186,7 +232,7 @@ class ArbitragePositionManager(PositionManager):
                 Logger.error(
                     f"创建套利仓位失败 | "
                     f"交易对: {symbol_id} | "
-                    f"数量: {data.get('amount')} | "
+                    f"数量: {volume} | "
                     f"错误类型: {e.__class__.__name__} | "
                     f"错误信息: {str(e)} | "
                     f"堆栈跟踪:\n{traceback.format_exc()}"
@@ -258,6 +304,12 @@ class ArbitragePositionManager(PositionManager):
                 exchange=EXCHANGE_FROM_CCXT[self.exchange_1.id],
                 client_id=spot_1_client_id
             )
+            spot_1_order.order_type = OrderType.LIMIT
+            spot_1_order.direction = leg_1_direction
+            spot_1_order.offset = Offset.OPEN
+            spot_1_order.price = 0
+            spot_1_order.volume = volume
+            spot_1_order.volume_traded = 0
 
             # 创建现货腿2的初始订单
             spot_2_order = OrderData.create_empty(
@@ -265,6 +317,12 @@ class ArbitragePositionManager(PositionManager):
                 exchange=EXCHANGE_FROM_CCXT[self.exchange_2.id],
                 client_id=spot_2_client_id
             )
+            spot_2_order.order_type = OrderType.LIMIT
+            spot_2_order.direction = leg_2_direction
+            spot_2_order.offset = Offset.OPEN
+            spot_2_order.price = 0
+            spot_2_order.volume = volume
+            spot_2_order.volume_traded = 0
 
             arbitrage_order = ArbitrageOrder(
                 order_id=arb_order_id,
@@ -279,8 +337,8 @@ class ArbitragePositionManager(PositionManager):
                 
 
             try:
-                price_1 = self.get_price_safely('exchange_1', symbol_id, side='asks' if leg_1_direction == Direction.BUY else 'bids', position=0)
-                price_2 = self.get_price_safely('exchange_2', symbol_id, side='bids' if leg_2_direction == Direction.BUY else 'asks', position=0)
+                price_1 = self.get_price_safely(self.exchange_1, symbol_id, side='asks' if leg_1_direction == Direction.BUY else 'bids', position=0)
+                price_2 = self.get_price_safely(self.exchange_2, symbol_id, side='bids' if leg_2_direction == Direction.BUY else 'asks', position=0)
                   
                 # 记录行情数据用于日志
                 Logger.info(
@@ -290,7 +348,7 @@ class ArbitragePositionManager(PositionManager):
                 )
                 
                 # 创建限价单
-                spot_1_order = self.send_order(
+                updated_spot_1_order = self.send_order(
                     client_id=spot_1_client_id,    
                     exchange=self.exchange_1,
                     symbol_id=symbol_id,
@@ -299,7 +357,11 @@ class ArbitragePositionManager(PositionManager):
                     order_type=OrderType.LIMIT,
                     direction=leg_1_direction
                 )
-                spot_2_order = self.send_order(
+
+                if updated_spot_1_order is not None:
+                    spot_1_order.copy_from(updated_spot_1_order)
+
+                updated_spot_2_order = self.send_order(
                     client_id=spot_2_client_id,
                     exchange=self.exchange_2,
                     symbol_id=symbol_id,
@@ -308,7 +370,9 @@ class ArbitragePositionManager(PositionManager):
                     order_type=OrderType.LIMIT,
                     direction=leg_2_direction
                 )
-               
+                if updated_spot_2_order is not None:
+                    spot_2_order.copy_from(updated_spot_2_order)
+
                 return arbitrage_order
                 
             except RequestTimeout as e:
@@ -363,56 +427,75 @@ class ArbitragePositionManager(PositionManager):
 
             # 检查订单状态为空或提交中，则查询订单，
             if spot_order_1.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
-                order_updated = self.query_order_by_client_id(self.exchange_1, spot_order_1.client_id, arb_order.symbol_id)
-                spot_order_1.copy_from(order_updated)
+                order_updated = self.query_order_by_client_id(self.exchange_1, spot_order_1.client_id, spot_order_1.symbol)
+                # spot_order_1.copy_from(order_updated)
                 
-                if spot_order_1 is None:
-                    order_updated = self.send_order(
+                if order_updated is None:
+                    if spot_order_1.direction == Direction.BUY:
+                        price = self.get_price_safely(self.exchange_1, spot_order_1.symbol, side='ask')
+                    else:
+                        price = self.get_price_safely(self.exchange_1, spot_order_1.symbol, side='bid')
+                    
+                    order_updated = self.send_spot_order(
                         client_id=spot_order_1.client_id,
                         exchange=self.exchange_1,
-                        symbol_id=arb_order.symbol_id,
+                        symbol_id=spot_order_1.symbol,
                         volume=spot_order_1.volume,
-                        price=spot_order_1.price,
+                        price=price,
                         order_type=OrderType.LIMIT,
                         direction=spot_order_1.direction
                     )   
-                    spot_order_1.copy_from(order_updated)
+                    if order_updated is not None:
+                        spot_order_1.copy_from(order_updated)
             
             if spot_order_2.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
-                order_updated = self.query_order_by_client_id(self.exchange_2, spot_order_2.client_id, arb_order.symbol_id)
-                spot_order_2.copy_from(order_updated)
+                order_updated = self.query_order_by_client_id(self.exchange_2, spot_order_2.client_id, spot_order_2.symbol)
+                # spot_order_2.copy_from(order_updated)
                 
-                if spot_order_2 is None:
-                    order_updated = self.send_order(
+                if order_updated is None:
+                    if spot_order_2.direction == Direction.BUY:
+                        price = self.get_price_safely(self.exchange_2, spot_order_2.symbol, side='bid')
+                    else:
+                        price = self.get_price_safely(self.exchange_2, spot_order_2.symbol, side='ask')
+
+                    order_updated = self.send_spot_order(
                         client_id=spot_order_2.client_id,
                         exchange=self.exchange_2,
-                        symbol_id=arb_order.symbol_id,
+                        symbol_id=spot_order_2.symbol,
                         volume=spot_order_2.volume,
-                        price=spot_order_2.price,
+                        price=price,
                         order_type=OrderType.LIMIT,
                         direction=spot_order_2.direction
                     )
-                    spot_order_2.copy_from(order_updated)
+                    if order_updated is not None:
+                        spot_order_2.copy_from(order_updated)
 
             if isinstance(arb_order, ArbitrageHedgeOrder) and swap_order.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
                 order_updated = self.query_order_by_client_id(self.exchange_hedge, swap_order.client_id, CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, arb_order.symbol_id))
-                swap_order.copy_from(order_updated)
+                # swap_order.copy_from(order_updated)
 
-                if swap_order is None:
-                    order_updated = self.send_order(
+                if order_updated is None:
+                    if swap_order.direction == Direction.BUY:
+                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='bid')
+                    else:
+                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='ask')
+
+                    order_updated = self.send_swap_order(
                         client_id=swap_order.client_id,
                         exchange=self.exchange_hedge,
-                        symbol_id=CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, arb_order.symbol_id),
+                        symbol_id=swap_order.symbol,
                         volume=swap_order.volume,
-                        price=swap_order.price,
+                        price=price,
                         order_type=OrderType.LIMIT,
-                        direction=swap_order.direction
+                        direction=swap_order.direction,
+                        offset=swap_order.offset
                     )
-                    swap_order.copy_from(order_updated)
+                    if order_updated is not None:
+                        swap_order.copy_from(order_updated)
 
             # 获取订单最新状态
             if spot_order_1.is_active:
-                exhange_order = self.exchange_1.fetch_order(id=spot_order_1.order_id, symbol=arb_order.symbol_id)
+                exhange_order = self.exchange_1.fetch_order(id=spot_order_1.order_id, symbol=spot_order_1.symbol)
                 updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, exhange_order)
                 
                 spot_order_1.volume_traded = updated_order.volume_traded
@@ -420,7 +503,7 @@ class ArbitragePositionManager(PositionManager):
 
             
             if spot_order_2.is_active:
-                exhange_order = self.exchange_2.fetch_order(id=spot_order_2.order_id, symbol=arb_order.symbol_id)
+                exhange_order = self.exchange_2.fetch_order(id=spot_order_2.order_id, symbol=spot_order_2.symbol)
                 updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, exhange_order)
                 
                 spot_order_2.volume_traded = updated_order.volume_traded
@@ -429,7 +512,7 @@ class ArbitragePositionManager(PositionManager):
             if isinstance(arb_order, ArbitrageHedgeOrder) and swap_order.is_active:
                 exhange_order = self.exchange_hedge.fetch_order(
                     id=swap_order.order_id, 
-                    symbol=CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, arb_order.symbol_id)
+                    symbol=swap_order.symbol
                     )
                 updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, exhange_order)
                 
@@ -497,7 +580,8 @@ class ArbitragePositionManager(PositionManager):
                     self.cancel_order(exchange=self.exchange_1, order=leg_spot_1)
 
                     if leg_spot_1.status != OrderStatus.CANCELLED:
-                        raise Exception(f"现货腿1撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_spot_1.status}")
+                        Logger.warning(f"现货腿1撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_spot_1.status}")
+                        return
 
                     volume_remaining = leg_spot_1.volume_remaining
                     if volume_remaining > 0:
@@ -505,11 +589,14 @@ class ArbitragePositionManager(PositionManager):
                             # TODO: 这里需要监控起来，比如发送邮件、拨打电话等，未来不影响效率，应该要使用异步任务来处理
                             Logger.warning(f"现货腿1追单次数超过限制, 不再追单")
                             return
-                          
+                        
                         if leg_spot_1.direction == Direction.BUY:
-                            price = self.get_price_safely('exchange_1', order.symbol_id, side='asks', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_spot_1.client_id,
+                            # 为每个交易腿生成唯一的client_id
+                            chase_spot_1_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_1, order.symbol_id, side='ask')
+                            chase_order = self.send_spot_order(
+                                client_id=chase_spot_1_client_id,
                                 exchange=self.exchange_1,
                                 symbol_id=order.symbol_id,
                                 volume=volume_remaining,
@@ -517,11 +604,15 @@ class ArbitragePositionManager(PositionManager):
                                 order_type=OrderType.LIMIT,
                                 direction=leg_spot_1.direction
                             )
-                            order.put_leg('spot_1', chase_order)
+                            if chase_order is not None:
+                                order.put_leg('spot_1', chase_order)
                         else:
-                            price = self.get_price_safely('exchange_1', order.symbol_id, side='bids', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_spot_1.client_id,
+                            # 为每个交易腿生成唯一的client_id
+                            chase_spot_1_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_1, order.symbol_id, side='bid')
+                            chase_order = self.send_spot_order(
+                                client_id=chase_spot_1_client_id,
                                 exchange=self.exchange_1,
                                 symbol_id=order.symbol_id,
                                 volume=volume_remaining,
@@ -529,13 +620,15 @@ class ArbitragePositionManager(PositionManager):
                                 order_type=OrderType.LIMIT,
                                 direction=leg_spot_1.direction
                             )
-                            order.put_leg('spot_1', chase_order)
+                            if chase_order is not None:
+                                order.put_leg('spot_1', chase_order)
                     
                 if leg_spot_2.status == OrderStatus.OPEN and leg_spot_2.volume_traded < leg_spot_2.volume:
                     self.cancel_order(exchange=self.exchange_2, order=leg_spot_2)
 
                     if leg_spot_2.status != OrderStatus.CANCELLED:
-                        raise Exception(f"现货腿2撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_spot_2.status}")
+                        Logger.warning(f"现货腿2撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_spot_2.status}")
+                        return
 
                     volume_remaining = leg_spot_2.volume_remaining
                     if volume_remaining > 0:
@@ -545,9 +638,11 @@ class ArbitragePositionManager(PositionManager):
                             return
                         
                         if leg_spot_2.direction == Direction.BUY:
-                            price = self.get_price_safely('exchange_2', order.symbol_id, side='asks', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_spot_2.client_id,
+                            chase_spot_2_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_2, order.symbol_id, side='ask')
+                            chase_order = self.send_spot_order(
+                                client_id=chase_spot_2_client_id,
                                 exchange=self.exchange_2,
                                 symbol_id=order.symbol_id,
                                 volume=volume_remaining,
@@ -555,11 +650,14 @@ class ArbitragePositionManager(PositionManager):
                                 order_type=OrderType.LIMIT,
                                 direction=leg_spot_2.direction
                             )
-                            order.put_leg('spot_2', chase_order)
+                            if chase_order is not None:
+                                order.put_leg('spot_2', chase_order)
                         else:
-                            price = self.get_price_safely('exchange_2', order.symbol_id, side='bids', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_spot_2.client_id,
+                            chase_spot_2_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_2, order.symbol_id, side='bid')
+                            chase_order = self.send_spot_order(
+                                client_id=chase_spot_2_client_id,
                                 exchange=self.exchange_2,
                                 symbol_id=order.symbol_id,
                                 volume=volume_remaining,
@@ -567,13 +665,15 @@ class ArbitragePositionManager(PositionManager):
                                 order_type=OrderType.LIMIT,
                                 direction=leg_spot_2.direction
                             )
-                            order.put_leg('spot_2', chase_order)
+                            if chase_order is not None:
+                                order.put_leg('spot_2', chase_order)
 
                 if isinstance(order, ArbitrageHedgeOrder) and leg_swap.status == OrderStatus.OPEN and leg_swap.volume_traded < leg_swap.volume:
                     self.cancel_order(exchange=self.exchange_hedge, order=leg_swap) 
 
                     if leg_swap.status != OrderStatus.CANCELLED:
-                        raise Exception(f"合约腿撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_swap.status}")
+                        Logger.warning(f"合约腿撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_swap.status}")
+                        return
 
                     contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)   
                     volume_remaining = leg_swap.volume_remaining
@@ -584,29 +684,39 @@ class ArbitragePositionManager(PositionManager):
                             return
                           
                         if leg_swap.direction == Direction.BUY:
-                            price = self.get_price_safely('exchange_hedge', contract_symbol, side='asks', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_swap.client_id,
+                            # 为每个交易腿生成唯一的client_id
+                            chase_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_hedge, contract_symbol, side='ask')
+                            chase_order = self.send_swap_order(
+                                client_id=chase_swap_client_id,
                                 exchange=self.exchange_hedge,
                                 symbol_id=contract_symbol,
                                 volume=volume_remaining,
                                 price=price,
                                 order_type=OrderType.LIMIT,
-                                direction=leg_swap.direction
+                                direction=leg_swap.direction,
+                                offset=leg_swap.offset
                             )
-                            order.put_leg('swap', chase_order)
+                            if chase_order is not None:
+                                order.put_leg('swap', chase_order)
                         else:
-                            price = self.get_price_safely('exchange_hedge', contract_symbol, side='bids', position=0)
-                            chase_order = self.send_order(
-                                client_id=leg_swap.client_id,
+                            # 为每个交易腿生成唯一的client_id
+                            chase_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                            price = self.get_price_safely(self.exchange_hedge, contract_symbol, side='bid')
+                            chase_order = self.send_swap_order(
+                                client_id=chase_swap_client_id,
                                 exchange=self.exchange_hedge,
                                 symbol_id=contract_symbol,
                                 volume=volume_remaining,
                                 price=price,
                                 order_type=OrderType.LIMIT,
-                                direction=leg_swap.direction
+                                direction=leg_swap.direction,  
+                                offset=leg_swap.offset
                             )
-                            order.put_leg('swap', chase_order)  
+                            if chase_order is not None:
+                                order.put_leg('swap', chase_order)  
 
                     
         except Exception as e:
@@ -633,10 +743,14 @@ class ArbitragePositionManager(PositionManager):
 
             if isinstance(order, ArbitrageHedgeOrder):
                 swap_order_filled = order.get_leg_volume_traded('swap') * (-1)
+                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)
+                contract_size = self.perpetual_markets[contract_symbol]['contract_size']
+                swap_order_filled_notional = swap_order_filled * contract_size
             else:
                 swap_order_filled = 0
-                
-            imbalance = spot_order_1_filled + spot_order_2_filled + swap_order_filled
+                swap_order_filled_notional = 0
+
+            imbalance = spot_order_1_filled + spot_order_2_filled + swap_order_filled_notional
             
             if abs(imbalance) <= self.context.strategy_params.common_params.order_imbalance_threshold:
                 return  # 差额很小，不需要处理
@@ -649,24 +763,34 @@ class ArbitragePositionManager(PositionManager):
                         Logger.warning(f"残腿调整次数超过限制, 不再调整")
                         return
 
-                    if order.leg_spot_1[-1].direction == Direction.SELL:
-                        price = self.market_data_service.get_orderbook('exchange_1', order.symbol_id)['bids'][0][0]
-                        new_order = self.exchange_1.create_limit_sell_order(
-                            symbol=order.symbol_id,
-                            amount=abs(imbalance),
-                            price=price
+                    new_spot_1_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+                    
+                    if order.leg_spot_1[-1].direction == Direction.SELL:             
+                        price = self.get_price_safely(self.exchange_1, order.symbol_id, 'bid')
+                        new_order = self.send_spot_order(
+                            client_id=new_spot_1_client_id,
+                            exchange=self.exchange_1,
+                            symbol_id=order.symbol_id,
+                            volume=abs(imbalance),
+                            price=price,
+                            order_type=OrderType.LIMIT,
+                            direction=Direction.SELL
                         )
-                        new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, new_order)
-                        order.put_leg('spot_1', new_order)
+                        if new_order is not None:
+                            order.put_leg('spot_1', new_order)
                     else:
-                        price = self.market_data_service.get_orderbook('exchange_2', order.symbol_id)['bids'][0][0]
-                        new_order = self.exchange_2.create_limit_sell_order(
-                            symbol=order.symbol_id,
-                            amount=abs(imbalance),
-                            price=price
+                        price = self.get_price_safely(self.exchange_2, order.symbol_id, 'bid')
+                        new_order = self.send_spot_order(
+                            client_id=new_spot_1_client_id,
+                            exchange=self.exchange_2,
+                            symbol_id=order.symbol_id,
+                            volume=abs(imbalance),
+                            price=price,
+                            order_type=OrderType.LIMIT,
+                            direction=Direction.SELL
                         )
-                        new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, new_order)
-                        order.put_leg('spot_2', new_order)
+                        if new_order is not None:
+                            order.put_leg('spot_2', new_order)
 
                     order.imbalance_adjust_times += 1
                     
@@ -678,24 +802,34 @@ class ArbitragePositionManager(PositionManager):
                         Logger.warning(f"残腿调整次数超过限制, 不再调整")
                         return
 
+                    new_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
                     if order.leg_spot_1[-1].direction == Direction.BUY:
-                        price = self.market_data_service.get_orderbook('exchange_1', order.symbol_id)['asks'][0][0]
-                        new_order = self.exchange_1.create_limit_buy_order(
-                            symbol=order.symbol_id,
-                            amount=abs(imbalance),
-                            price=price
+                        price = self.get_price_safely(self.exchange_1, order.symbol_id, 'ask')
+                        new_order = self.send_spot_order(
+                            client_id=new_spot_client_id,
+                            exchange=self.exchange_1,
+                            symbol_id=order.symbol_id,
+                            volume=abs(imbalance),
+                            price=price,
+                            order_type=OrderType.LIMIT,
+                            direction=Direction.BUY
                         )
-                        new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, new_order)
-                        order.put_leg('spot_1', new_order)
+                        if new_order is not None:
+                            order.put_leg('spot_1', new_order)
                     else:
-                        price = self.market_data_service.get_orderbook('exchange_2', order.symbol_id)['asks'][0][0]
-                        new_order = self.exchange_2.create_limit_buy_order(
-                            symbol=order.symbol_id,
-                            amount=abs(imbalance),
-                            price=price
-                        )
-                        new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, new_order)
-                        order.put_leg('spot_2', new_order)
+                        price = self.get_price_safely(self.exchange_2, order.symbol_id, 'ask')
+                        new_order = self.send_spot_order(
+                            client_id=new_spot_client_id,
+                            exchange=self.exchange_2,
+                            symbol_id=order.symbol_id,
+                            volume=abs(imbalance),
+                            price=price,
+                            order_type=OrderType.LIMIT,
+                            direction=Direction.BUY
+                        )   
+                        if new_order is not None:
+                            order.put_leg('spot_2', new_order)
 
                     order.imbalance_adjust_times += 1
 
@@ -706,16 +840,24 @@ class ArbitragePositionManager(PositionManager):
                 if order.is_imbalance_adjust_times_limit(self.context.strategy_params.common_params.imbalance_adjust_times):
                     Logger.warning(f"残腿调整次数超过限制, 不再调整")
                     return
+                
+                new_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
 
                 contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)
-                price = self.market_data_service.get_orderbook('exchange_hedge', contract_symbol)['bids'][0][0]
-                new_order = self.exchange_hedge.create_limit_sell_order(
-                    contract_symbol,
-                    abs(imbalance),
-                    price=price
+                contract_size = self.perpetual_markets[contract_symbol]['contract_size']
+                price = self.get_price_safely(self.exchange_hedge, contract_symbol, 'bid')
+                new_order = self.send_swap_order(
+                    client_id=new_swap_client_id,
+                    exchange=self.exchange_hedge,
+                    symbol_id=contract_symbol,
+                    volume=abs(imbalance) / contract_size,
+                    price=price,
+                    order_type=OrderType.LIMIT,
+                    direction=Direction.SELL,
+                    offset=Offset.OPEN
                 )
-                new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, new_order)
-                order.put_leg('swap', new_order)
+                if new_order is not None:
+                    order.put_leg('swap', new_order)
 
                 order.imbalance_adjust_times += 1
 
@@ -727,27 +869,39 @@ class ArbitragePositionManager(PositionManager):
                     Logger.warning(f"残腿调整次数超过限制, 不再调整")
                     return
 
-                price1 = self.market_data_service.get_orderbook('exchange_1', order.symbol_id)['asks'][0][0]
-                price2 = self.market_data_service.get_orderbook('exchange_2', order.symbol_id)['asks'][0][0]
+                price1 = self.get_price_safely(self.exchange_1, order.symbol_id, 'ask')
+                price2 = self.get_price_safely(self.exchange_2, order.symbol_id, 'ask')
 
                 if price1 <= price2:
-                    new_order = self.exchange_1.create_limit_buy_order(
-                        symbol=order.symbol_id,
-                        amount=abs(imbalance),
-                        price=price1
+                    new_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                    new_order = self.send_spot_order(
+                        client_id=new_spot_client_id,
+                        exchange=self.exchange_1,
+                        symbol_id=order.symbol_id,
+                        volume=abs(imbalance),
+                        price=price1,
+                        order_type=OrderType.LIMIT,
+                        direction=Direction.BUY
                     )
-                    new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_1, new_order)
-                    order.put_leg('spot_1', new_order)
+                    if new_order is not None:
+                        order.put_leg('spot_1', new_order)
 
                     order.imbalance_adjust_times += 1
                 else:   
-                    new_order = self.exchange_2.create_limit_buy_order(
-                        symbol=order.symbol_id,
-                        amount=abs(imbalance),
-                        price=price2
+                    new_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
+
+                    new_order = self.send_spot_order(
+                        client_id=new_spot_client_id,
+                        exchange=self.exchange_2,
+                        symbol_id=order.symbol_id,
+                        volume=abs(imbalance),
+                        price=price2,
+                        order_type=OrderType.LIMIT,
+                        direction=Direction.BUY
                     )
-                    new_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_2, new_order)
-                    order.put_leg('spot_2', new_order)
+                    if new_order is not None:
+                        order.put_leg('spot_2', new_order)
 
                     order.imbalance_adjust_times += 1
 
@@ -783,22 +937,23 @@ class ArbitragePositionManager(PositionManager):
             # 触发取消事件
             self.event_engine.put_event(EventType.ON_CANCEL, order_data)
 
-    def send_order(
+
+    def send_spot_order(
             self,
             client_id: str,
             exchange: Union[ccxt.Exchange, ccxtpro.Exchange], 
             symbol_id: str, 
             volume: float, 
             price: float, 
-            order_type: OrderType, 
+            order_type: OrderType,
             direction: Direction
             ):
         """
-        发送订单
+        发送现货订单
         
         Args:
             exchange: 交易所
-            symbol_id: 交易对
+            symbol_id: 交易对   
             volume: 数量
             price: 价格
             order_type: 订单类型
@@ -816,6 +971,66 @@ class ArbitragePositionManager(PositionManager):
             )
             order = exchange.fetch_order(order['id'], symbol_id)     
             order = CryptoUtil.convert_order_data_from_ccxt(exchange, order)
+            # 触发取消事件
+            self.event_engine.put_event(EventType.ON_ORDER, order)
+
+            return order
+        except Exception as e:
+            Logger.error(f"发送订单失败: {e}")
+            return None
+        
+    def send_swap_order(
+            self,
+            client_id: str,
+            exchange: Union[ccxt.Exchange, ccxtpro.Exchange], 
+            symbol_id: str, 
+            volume: float, 
+            price: float, 
+            order_type: OrderType, 
+            direction: Direction,
+            offset: Offset
+            ):
+        """
+        发送永续合约订单
+        
+        Args:
+            exchange: 交易所
+            symbol_id: 交易对
+            volume: 数量
+            price: 价格
+            order_type: 订单类型
+            direction: 方向
+        """
+        try:
+            if direction == Direction.BUY and offset == Offset.OPEN:
+                pos_side = PositionSide.LONG
+            elif direction == Direction.SELL and offset == Offset.OPEN:
+                pos_side = PositionSide.SHORT
+            elif direction == Direction.BUY and offset == Offset.CLOSE:
+                pos_side = PositionSide.SHORT
+            elif direction == Direction.SELL and offset == Offset.CLOSE:
+                pos_side = PositionSide.LONG
+            else:
+                raise ValueError(f"无效的偏移量: {offset}")
+            
+            exchange.set_leverage(1, symbol_id)
+                
+            # 调用交易所API发送订单
+            order = exchange.create_order(
+                symbol=symbol_id, 
+                type=ORDERTYPE_2CCXT[order_type], 
+                side=DIRECTION_2CCXT[direction], 
+                amount=volume, 
+                price=price,
+                params={'clientOrderId': client_id, 
+                        'tdMode': 'cross',  # cross - 全仓模式, isolated - 逐仓模式
+                        'posSide': POSITION_SIDE_2CCXT[pos_side]   # 持仓方向，'long' 或 'short'
+                        }
+            )
+            order = exchange.fetch_order(order['id'], symbol_id)     
+            order = CryptoUtil.convert_order_data_from_ccxt(exchange, order)
+            # 设置偏移量, 交易所返回的order里面不含position_direction，这里重新设置
+            order.offset = offset
             # 触发取消事件
             self.event_engine.put_event(EventType.ON_ORDER, order)
 
@@ -864,7 +1079,7 @@ class ArbitragePositionManager(PositionManager):
         if hasattr(self, 'event_engine'):
             self.event_engine.stop()
 
-    def get_price_safely(self, exchange_id, symbol, side='bids', position=0, default=None):
+    def get_price_safely(self, exchange: Union[ccxt.Exchange, ccxtpro.Exchange], symbol, side='bid', default=None):
         """
         安全地获取指定交易所和交易对的价格
         
@@ -879,23 +1094,155 @@ class ArbitragePositionManager(PositionManager):
             float 或 default: 获取到的价格，或默认值
         """
         try:
-            orderbook = self.market_data_service.get_orderbook(exchange_id, symbol)
-            if (orderbook and side in orderbook and 
-                len(orderbook[side]) > position and 
-                len(orderbook[side][position]) > 0):
-                return orderbook[side][position][0]
+            bbo = self.market_data_service.get_bbo(exchange.id, symbol)
+
+            if side == 'bid':
+                return bbo['bid_price']
+            elif side == 'ask':
+                return bbo['ask_price']
             else:
-                Logger.warning(f"无可用{side}报价: {exchange_id}, {symbol}, 位置 {position}")
                 return default
+            
         except Exception as e:
-            Logger.error(f"获取{side}报价失败: {exchange_id}, {symbol}, 错误: {e}")
+            Logger.error(f"获取{side}报价失败: {exchange.id}, {symbol}, 错误: {e}")
             return default
 
     def get_arbitrage_position(self, symbol_id: str) -> ArbitragePosition:
         """
         获取指定symbol_id的套利仓位
         """
-        return self.position_holder[symbol_id]
+        with self.lock:
+            return self.position_holder.get(symbol_id, None)
+
+    def check_margin_requirements(
+            self, 
+            exchange: ccxt.Exchange, 
+            symbol: str, 
+            position_size: float, 
+            leverage: float = 10, 
+            position_type: str = 'long', 
+            margin_mode: str = 'isolated'
+            ) -> Dict:
+        """
+        检查合约保证金要求，计算风险指标
+        
+        Args:
+            exchange_id: 交易所ID
+            symbol: 交易对名称，例如 'BTC/USDT:USDT'
+            position_size: 仓位大小，以基础货币单位计算(如BTC数量)
+            leverage: 杠杆倍数，默认为10倍
+            position_type: 仓位类型，'long'或'short'
+            margin_mode: 保证金模式，'isolated'(逐仓)或'cross'(全仓)
+            
+        Returns:
+            Dict: {
+                'required_initial_margin': 初始保证金要求,
+                'required_maintenance_margin': 维持保证金要求,
+                'available_balance': 可用余额,
+                'margin_ratio': 保证金率,
+                'liquidation_price': 预估强平价格,
+                'margin_safety': 保证金安全度(可用余额/所需保证金),
+                'max_position_size': 当前最大可开仓位,
+                'error': 错误信息(如有)
+            }
+        """
+        
+        try:
+            # 获取市场信息
+            markets = CryptoUtil.get_perpetual_markets(exchange)
+            if symbol not in markets:
+                return {
+                    'error': f"交易对 {symbol} 不是永续合约或不存在",
+                    'margin_safety': 0,
+                    'required_initial_margin': 0,
+                    'required_maintenance_margin': 0,
+                    'available_balance': 0,
+                    'margin_ratio': 0,
+                    'liquidation_price': 0,
+                    'max_position_size': 0
+                }
+            
+            market_info = markets[symbol]
+            
+            # 获取当前价格
+            current_price = 0
+            key = f"{exchange.id}:{symbol}"
+            
+            # 先尝试从我们的缓存中获取价格
+            with self.lock:
+                current_price = (self.get_price_safely(exchange, symbol, 'bid', 0) + self.get_price_safely(exchange, symbol, 'ask', 0)) / 2
+
+            # 如果缓存中没有，则通过API获取
+            if current_price <= 0:
+                ticker = exchange.fetch_ticker(symbol)
+                current_price = ticker['last'] or ((ticker['bid'] + ticker['ask']) / 2)
+            
+            # 获取合约乘数
+            contract_size = market_info.get('contract_size', 1)
+            # 计算仓位价值
+            position_value = position_size * current_price * contract_size
+            
+            # 获取保证金率
+            initial_margin_rate = market_info.get('initial_margin', 1/leverage)
+            maintenance_margin_rate = market_info.get('maintenance_margin', 0.005)  # 默认0.5%
+            
+            # 计算所需保证金
+            required_initial_margin = position_value * initial_margin_rate
+            required_maintenance_margin = position_value * maintenance_margin_rate
+            
+            # 获取账户余额
+            balance = exchange.fetch_balance()
+            quote_currency = market_info['quote']
+            available_balance = float(balance.get('free', {}).get(quote_currency, 0))
+            
+            # 计算最大可开仓位
+            max_position_size = (available_balance * leverage) / (current_price * contract_size)
+            
+            # 计算保证金安全度
+            margin_safety = available_balance / required_initial_margin if required_initial_margin > 0 else 0
+            
+            # 计算预估强平价格
+            liquidation_price = 0
+            if position_type.lower() == 'long':
+                # 多仓强平价 = 开仓价 * (1 - 初始保证金率 + 维持保证金率)
+                liquidation_price = current_price * (1 - initial_margin_rate + maintenance_margin_rate)
+            else:
+                # 空仓强平价 = 开仓价 * (1 + 初始保证金率 - 维持保证金率)
+                liquidation_price = current_price * (1 + initial_margin_rate - maintenance_margin_rate)
+            
+            # 构建结果
+            result = {
+                'required_initial_margin': required_initial_margin,
+                'required_maintenance_margin': required_maintenance_margin,
+                'available_balance': available_balance,
+                'margin_ratio': initial_margin_rate,
+                'liquidation_price': liquidation_price,
+                'margin_safety': margin_safety,
+                'max_position_size': max_position_size,
+                'current_price': current_price,
+                'contract_size': contract_size,
+                'position_value': position_value,
+                'error': None
+            }
+            
+            # 检查是否有足够的保证金
+            if margin_safety < 1:
+                result['warning'] = f"保证金不足，安全度为 {margin_safety:.2f}，需要 {required_initial_margin:.6f} {quote_currency}，可用 {available_balance:.6f} {quote_currency}"
+            
+            return result
+            
+        except Exception as e:
+            Logger.error(f"检查保证金要求时出错: {str(e)}")
+            return {
+                'error': f"检查保证金要求时出错: {str(e)}",
+                'margin_safety': 0,
+                'required_initial_margin': 0,
+                'required_maintenance_margin': 0,
+                'available_balance': 0,
+                'margin_ratio': 0,
+                'liquidation_price': 0,
+                'max_position_size': 0
+            }
 
 def test_arbitrage_position_manager():
     from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import setup_exchanges, load_pairs

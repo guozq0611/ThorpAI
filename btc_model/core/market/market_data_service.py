@@ -15,7 +15,7 @@ import traceback
 import json
 import copy
 import pymysql
-
+from typing import Union
 
 class MarketDataService:
     """
@@ -205,6 +205,36 @@ class MarketDataService:
             # 初始化空数据结构
             self.funding_rates[key] = {'fundingRate': 0, 'timestamp': 0}
         Logger.info(f"subscribe funding rate: {key}")
+
+    def get_bbo(self, exchange_id: str, symbol: str) -> Dict[str, Any]:
+        """获取特定交易所和交易对的BBO"""
+        key = f"{exchange_id}:{symbol}"
+        with self.lock:
+            bbo = self.bbo_prices.get(key, {'bid_price': 0, 'bid_volume': 0, 'ask_price': 0, 'ask_volume': 0, 'timestamp': 0})
+            if bbo['bid_price'] == 0 or bbo['ask_price'] == 0:
+                # 如果BBO价格为0, 则通过同步方式获取BBO
+                if self.exchanges[exchange_id].has['fetchBidsAsks']:
+                    bbo = self.exchanges[exchange_id].fetch_bids_asks([symbol])
+                    bbo = {
+                        'bid_price': bbo[symbol]['bid'],
+                        'bid_volume': bbo[symbol]['bidVolume'],
+                        'ask_price': bbo[symbol]['ask'],
+                        'ask_volume': bbo[symbol]['askVolume'],
+                        'timestamp': bbo[symbol]['timestamp'] or int(time.time() * 1000)
+                    }
+                    self.bbo_prices[key] = bbo
+                elif self.exchanges[exchange_id].has['fetchTicker']:
+                    ticker = self.exchanges[exchange_id].fetch_ticker(symbol)
+                    bbo = {
+                        'bid_price': ticker['bid'],
+                        'bid_volume': ticker['bidVolume'],
+                        'ask_price': ticker['ask'],
+                        'ask_volume': ticker['askVolume'],
+                        'timestamp': ticker['timestamp'] or int(time.time() * 1000)
+                    }
+                    self.bbo_prices[key] = bbo
+
+            return bbo
     
     def get_orderbook(self, exchange_id: str, symbol: str) -> Dict[str, Any]:
         """获取特定交易所和交易对的订单簿"""
@@ -528,31 +558,32 @@ class MarketDataService:
             bbo_prices = await asyncio.wait_for(exchange.watch_bids_asks(symbols),timeout=30)
             for symbol, bbo in bbo_prices.items():
                 key = f"{exchange.id}:{symbol}"
+                current_timestamp = int(time.time() * 1000)
                 with self.lock:
                     self.bbo_prices[key] = {
                         'bid_price': bbo['bid'],
                         'bid_volume': bbo['bidVolume'],
                         'ask_price': bbo['ask'],
                         'ask_volume': bbo['askVolume'],
-                        'timestamp': bbo['timestamp']
+                        'timestamp': bbo['timestamp'] or current_timestamp
                     }
 
-                    Logger.info(f"bbo updated, {key}, bid:{self.bbo_prices[key]['bid_price'] if self.bbo_prices[key]['bid_price'] else 'N/A'}, ask:{self.bbo_prices[key]['ask_price'] if self.bbo_prices[key]['ask_price'] else 'N/A'}")
+                    # Logger.info(f"bbo updated, {key}, bid:{self.bbo_prices[key]['bid_price'] if self.bbo_prices[key]['bid_price'] else 'N/A'}, ask:{self.bbo_prices[key]['ask_price'] if self.bbo_prices[key]['ask_price'] else 'N/A'}")
 
         except Exception as e:
             Logger.error(f"使用watch_bbo_prices获取bbo失败, 交易所: {exchange.id}, 错误: {str(e)}")
             # 确保有一个空的数据结构
-            with self.lock:
-                for symbol in symbols:
-                    key = f"{exchange.id}:{symbol}"
-                    if key not in self.bbo_prices:
-                        self.bbo_prices[key] = {       
-                            'bidPrice': 0,
-                            'bidVolume': 0,
-                            'askPrice': 0,
-                            'askVolume': 0,
-                            'timestamp': int(time.time() * 1000)
-                        }
+            # with self.lock:
+            #     for symbol in symbols:
+            #         key = f"{exchange.id}:{symbol}"
+            #         if key not in self.bbo_prices:
+            #             self.bbo_prices[key] = {       
+            #                 'bidPrice': 0,
+            #                 'bidVolume': 0,
+            #                 'askPrice': 0,
+            #                 'askVolume': 0,
+            #                 'timestamp': int(time.time() * 1000)
+            #             }
     
     
     async def _watch_orderbook_for_symbols(self, exchange: ccxtpro.Exchange, symbols: List[str]) -> None:
@@ -646,13 +677,15 @@ class MarketDataService:
 
 
 
-    def is_data_fresh(self, data_type: str, exchange: Exchange, symbol: str, max_age_ms: int = 10000) -> bool:
+    def is_data_fresh(self, data_type: str, exchange_id: str, symbol: str, max_age_ms: int = 10000) -> bool:
         """检查数据是否新鲜（默认10秒内的数据视为新鲜）"""
-        key = f"{exchange.lower()}:{symbol}"
+        key = f"{exchange_id}:{symbol}"
         current_time = int(time.time() * 1000)
         
         with self.lock:
-            if data_type == 'orderbook':
+            if data_type == 'bbo':
+                data = self.bbo_prices.get(key, {})
+            elif data_type == 'orderbook':
                 data = self.orderbooks.get(key, {})
             elif data_type == 'funding_rate':
                 data = self.funding_rates.get(key, {})
@@ -662,6 +695,7 @@ class MarketDataService:
             timestamp = data.get('timestamp', 0)
             return (current_time - timestamp) <= max_age_ms 
 
+   
     def ensure_market_data_db(self, db_config):
         """初始化行情数据库和表结构"""
         try:
@@ -1042,7 +1076,7 @@ def subscribe_market_data(pairs, market_data_service: MarketDataService):
                 market_data_service.subscribe_bbo(exchange_id, symbol)
             for symbol in swap_symbols_to_watch:
                 #market_data_service.subscribe_orderbook(exchange_id, symbol)
-                market_data_service.subscribe_ticker(exchange_id, symbol)
+                market_data_service.subscribe_bbo(exchange_id, symbol)
                 #market_data_service.subscribe_funding_rate(exchange_id, symbol)
         
         Logger.info(f"已订阅 {len(spot_symbols_to_watch)} 个现货交易对的市场数据")

@@ -7,7 +7,7 @@ from datetime import datetime
 from btc_model.setting.setting import get_settings
 from btc_model.core.common.singleton import Singleton
 from btc_model.core.common.object import OrderData
-from btc_model.core.common.const import Exchange, OrderStatus, Direction, OrderType, Offset
+from btc_model.core.common.const import Exchange, OrderStatus, Direction, OrderType, Offset, PositionSide
 
 
 # Order type map
@@ -26,6 +26,13 @@ DIRECTION_2CCXT: dict[Direction, str] = {
   
 }
 DIRECTION_FROM_CCXT: dict[str, Direction] = {v: k for k, v in DIRECTION_2CCXT.items()}
+
+POSITION_SIDE_2CCXT: dict[PositionSide, str] = {
+    PositionSide.LONG: "long",
+    PositionSide.SHORT: "short",
+    PositionSide.NET: "net"
+}
+POSITION_SIDE_FROM_CCXT: dict[str, PositionSide] = {v: k for k, v in POSITION_SIDE_2CCXT.items()}
 
 # Order status map
 STATUS_2CCXT: dict[OrderStatus, str] = {
@@ -49,6 +56,68 @@ class CryptoUtil:
     """
     加密货币工具类
     """
+    @staticmethod
+    def create_exchanges(exchange_ids: List[str]) -> Dict[str, ccxt.Exchange]:
+        """根据交易所ID创建交易所实例"""
+        exchanges = {}
+        for exchange_id in exchange_ids:
+            setting = get_settings(f"cex.{exchange_id}")
+
+            if setting is None:
+                raise ValueError(f"没有找到交易所配置: {exchange_id}")
+                    
+            params = {
+                'enableRateLimit': True,
+                'proxies': {
+                    'http': get_settings('common')['proxies'].get('http', None),                   
+                    'https': get_settings('common')['proxies'].get('https', None),  
+                },
+                'apiKey': setting.get('apikey', None),          
+                'secret': setting.get('secretkey', None),  
+                'password': setting.get('passphrase', None),     
+                'options': {
+                    'defaultType': 'spot',
+                },
+                'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+                'ws_proxy': get_settings('common')['proxies'].get('http', None)
+            }
+
+            exchange = getattr(ccxt, exchange_id)(params)
+            exchanges[exchange_id] = exchange
+        return exchanges
+    
+    @staticmethod
+    def create_sandbox_exchanges(exchange_ids: List[str], exchange_type: str) -> Dict[str, ccxt.Exchange]:
+        """根据交易所ID创建模拟交易所实例"""
+        exchanges = {}
+        for exchange_id in exchange_ids:
+            setting = get_settings(f"cex.sandbox.{exchange_id}.{exchange_type}")
+
+            if setting is None:
+                raise ValueError(f"没有找到模拟交易所配置: {exchange_id}")
+                
+            
+            params = {
+                'enableRateLimit': True,
+                'proxies': {
+                    'http': get_settings('common')['proxies'].get('http', None),                   
+                    'https': get_settings('common')['proxies'].get('https', None),  
+                },
+                'apiKey': setting.get('apikey', None),          
+                'secret': setting.get('secretkey', None),  
+                'password': setting.get('passphrase', None),     
+                'options': {
+                    'defaultType': exchange_type,
+                },
+                'aiohttp_proxy': get_settings('common')['proxies'].get('http', None),
+                'ws_proxy': get_settings('common')['proxies'].get('http', None)
+            }
+
+            exchange = getattr(ccxt, exchange_id)(params)
+            exchange.set_sandbox_mode(True)
+            exchanges[exchange_id] = exchange
+        return exchanges
+
     @staticmethod
     def create_pro_exchange(exchange: ccxt.Exchange) -> tuple[Optional[ccxt.pro.Exchange], str]:
         """根据普通交易所实例创建对应的 ccxtpro 实例"""
@@ -400,7 +469,7 @@ class CryptoUtil:
                     'max': market['limits']['cost']['max'] if 'cost' in market['limits'] else None
                 }
             }
-            
+
             return limits
             
         except ccxt.ExchangeError as e:
@@ -646,8 +715,8 @@ class CryptoUtil:
             market = exchange.load_markets()[symbol]
             ticker = exchange.fetch_ticker(symbol)
             
-            if not market.get('future'):
-                raise ValueError(f"{symbol} 不是合约交易对")
+            if not market.get('swap'):
+                raise ValueError(f"{symbol} 不是永续合约交易对")
                 
             # 获取保证金率
             maintenance_margin = market.get('maintenance_margin_rate', 0.005)  # 默认0.5%
@@ -666,6 +735,7 @@ class CryptoUtil:
             # 计算其他风险指标
             risk_info = {
                 'max_position': max_position,
+                'contract_size': contract_size,
                 'liquidation_price': None,  # 需要根据具体仓位计算
                 'margin_ratio': 1/leverage,
                 'maintenance_amount': maintenance_margin * free_margin,
@@ -1284,6 +1354,28 @@ class CryptoUtil:
         # else:
         #     return symbol
 
+    @staticmethod
+    def convert_perpetual_symbol_to_spot(symbol: str) -> str:
+        """
+        将永续合约交易对转换为对应的现货交易对
+        
+        Args:
+            symbol: 永续合约交易对 (例如: 'BTC/USDT:USDT')
+            
+        Returns:
+            str: 现货交易对 (例如: 'BTC/USDT')
+        """
+        if ':' in symbol:
+            # 处理标准格式的永续合约符号 (例如: 'BTC/USDT:USDT')
+            return symbol.split(':')[0]
+        elif '-' in symbol and any(suffix in symbol for suffix in ['PERP', 'SWAP', 'PERPETUAL']):
+            # 处理某些交易所的特殊格式 (例如: 'BTC-USDT-SWAP')
+            parts = symbol.split('-')
+            if len(parts) >= 2:
+                return f"{parts[0]}/{parts[1]}"
+        
+        # 如果不是永续合约格式或无法识别，则返回原始符号
+        return symbol
     
     @staticmethod
     def convert_order_data_from_ccxt(ccxt_exchange: Union[ccxt.Exchange, ccxt.pro.Exchange], exchange_order: dict) -> OrderData:

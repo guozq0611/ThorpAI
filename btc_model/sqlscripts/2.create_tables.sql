@@ -19,3 +19,15 @@ CREATE TABLE IF NOT EXISTS arbitrage_position (
 ) COMMENT='指数日线行情表';
 
 
+-- 黑名单交易对
+CREATE TABLE IF NOT EXISTS blacklist_symbols (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    symbol_id VARCHAR(32) NOT NULL COMMENT '合约代码',
+    exchange_id VARCHAR(32) NULL COMMENT '交易所ID, 如果为空, 则表示所有交易所',
+    strategy_name VARCHAR(32) NULL COMMENT '策略名称, 如果为空, 则表示所有策略',
+    reason VARCHAR(128) NULL COMMENT '禁止原因',
+    active BOOLEAN DEFAULT TRUE COMMENT '是否生效',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY (symbol_id, exchange_id, strategy_name, reason)
+) COMMENT='黑名单交易对表';

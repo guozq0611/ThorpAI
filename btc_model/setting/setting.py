@@ -33,7 +33,7 @@ SETTINGS: Dict[str, Any] = {
     # 配置需要订阅的市场数据
     "market_data_service.exchanges": ['binance', 'okx'],
 
-    "trade.live_mode": True,
+    "trade.live_mode": False,
 
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # 为避免真实账户信息泄露，这里填写的是模拟账户的apikey和secretkey
@@ -134,7 +134,7 @@ SETTINGS: Dict[str, Any] = {
     "strategy.exchange_arbitrage.common_params": {
         "order_timeout": 10,    # 订单超时时间, 超时后撤单重新下单
         "retry_times": 3,       # 重试次数
-        "order_imbalance_threshold": 0.0001,    # 残腿阈值
+        "order_imbalance_threshold": 10,    # 残腿阈值，单位为USDT
         "order_chase_times": 3, # 追单次数
         "imbalance_adjust_times": 5, # 残腿调整次数
     },
@@ -142,8 +142,10 @@ SETTINGS: Dict[str, Any] = {
     "strategy.exchange_arbitrage.capital_limit_params": {
         "max_amount": 100,
         "max_trading_pairs": 10,
-        "max_amount_per_pair": 1000,
-        "min_amount_per_pair": 100,
+        "max_amount_per_pair": 100,
+        "min_amount_per_pair": 10,
+        "swap_leverage": 1, # 永续合约杠杆倍数
+        
     },
 
     "strategy.exchange_arbitrage.spread_threshold_params": {

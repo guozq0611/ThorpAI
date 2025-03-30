@@ -137,7 +137,7 @@ class Direction(Enum):
         return self in {Direction.LONG, Direction.SHORT}
     
 
-class PositionDirection(Enum):
+class PositionSide(Enum):
     """
     Direction specifically for positions.
     """
