@@ -8,7 +8,8 @@
 btc_model/research/布林通道策略（日线）.ipynb
 btc_model/core/util/__pycache__/file_util.cpython-310.pyc
 btc_model/tests/
-btc_model/ui/
+btc_model/ui/streamlit/
+btc_model/ui/trading-ui/
 btc_model/strategy/exchange_arbitrage/
 # Python
 __pycache__/

@@ -189,6 +189,27 @@ class ExchangeArbitrageStrategy:
         fecth_ressult = DBUtil().get_blacklist_symbols()
         self._blacklist_symbols = set(CryptoUtil.convert_perpetual_symbol_to_spot(result[1]) for result in fecth_ressult)
 
+    def _load_arbitrage_positions(self):
+        """加载套利仓位"""
+        sql = """
+            SELECT      
+                symbol_id,
+                leg1_exchange,
+                leg1_position,
+                leg1_frozen,
+                leg2_exchange,
+                leg2_position,
+                leg2_frozen,
+                hedge_exchange,
+                hedge_contract_id,
+                hedge_contract_size,
+                hedge_position,
+                hedge_frozen
+            FROM cross_exchange_arbitrage_position
+        """
+        fecth_ressult = DBUtil.get_instance().fetch_result(sql)
+        self.arbitrage_positions = {result[0]: result[1] for result in fecth_ressult}
+
     def _subscribe_market_data(self):
         """
         订阅交易对的行情数据

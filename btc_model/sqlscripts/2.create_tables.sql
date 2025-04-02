@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS cross_exchange_arbitrage_hedge_order (
     order_date DATE NOT NULL COMMENT '订单日期',
     order_time TIME NOT NULL COMMENT '订单时间',
     symbol_id VARCHAR(32) NOT NULL COMMENT '合约代码',
-    -- 第1腿订单
+    -- 第1腿
     leg1_exchange VARCHAR(32) NOT NULL COMMENT '第1腿交易所',
     leg1_price DECIMAL(18, 4) NOT NULL COMMENT '第1腿买入价格',
     leg1_volume DECIMAL(18, 4) NOT NULL COMMENT '第1腿买入数量',

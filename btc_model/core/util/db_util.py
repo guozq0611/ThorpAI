@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy import text
 
+from btc_model.core.common.singleton import singleton
 from btc_model.setting.setting import get_settings
 
 settings = get_settings('database.mysql')
@@ -12,6 +13,7 @@ DB_PORT = settings['port']
 DB_DATABASE = settings['database']
 
 _db_engine = None
+
 
 def get_db_engine(database_name=''):
     global _db_engine
@@ -25,10 +27,27 @@ def get_db_engine(database_name=''):
     _db_engine = create_engine(db_link, echo=False, max_overflow=10, pool_size=50, pool_reset_on_return=None)
     return _db_engine
 
-
+@singleton
 class DBUtil:
     def __init__(self):
         self.db_engine = get_db_engine(DB_DATABASE)
+
+    @classmethod
+    def get_instance(cls):
+        if cls.__instance is None:
+            cls.__instance = cls()
+
+        return cls.__instance
+    
+    def fetch_result(self, sql: str, params: dict = None):
+        with self.db_engine.connect() as conn:
+            result = conn.execute(text(sql), params)
+            return result.fetchall()
+        
+    def execute_sql_with_commit(self, sql: str, params: dict = None):
+        with self.db_engine.connect() as conn:
+            conn.execute(text(sql), params)
+            conn.commit()
 
     def get_blacklist_symbols(self, exchange_id: str = None, strategy_name: str = None, active: bool = True):
         with self.db_engine.connect() as conn:

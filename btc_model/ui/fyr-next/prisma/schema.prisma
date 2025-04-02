@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Strategy {
+  id          String   @id @default(uuid())
+  name        String
+  type        String
+  symbol      String
+  parameters  Json
+  enabled     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Position {
+  id            String   @id @default(uuid())
+  symbol        String
+  side          String
+  size          Float
+  entryPrice    Float
+  currentPrice  Float
+  unrealizedPnL Float
+  leverage      Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Order {
+  id            String   @id @default(uuid())
+  symbol        String
+  side          String
+  type          String
+  price         Float
+  amount        Float
+  status        String
+  filledAmount  Float
+  averagePrice  Float
+  pnl           Float
+  timestamp     DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+} 
