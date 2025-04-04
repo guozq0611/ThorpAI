@@ -26,7 +26,7 @@ const DefaultAsideTemplate = () => {
 			</AsideHead>
 			<AsideBody>
 				<Nav>
-					<NavItem {...appPages.salesAppPages.subPages.salesDashboardPage} />
+					{/* <NavItem {...appPages.salesAppPages.subPages.salesDashboardPage} />
 					<NavItem {...appPages.aiAppPages.subPages.aiDashboardPage}>
 						<Badge
 							variant='outline'
@@ -34,8 +34,8 @@ const DefaultAsideTemplate = () => {
 							className='border-transparent leading-none'>
 							NEW
 						</Badge>
-					</NavItem>
-					<NavItem {...appPages.crmAppPages.subPages.crmDashboardPage}>
+					</NavItem> */}
+					{/* <NavItem {...appPages.crmAppPages.subPages.crmDashboardPage}>
 						<NavButton
 							title='New Customer'
 							icon='HeroPlusCircle'
@@ -45,18 +45,18 @@ const DefaultAsideTemplate = () => {
 								);
 							}}
 						/>
-					</NavItem>
-					<NavItem {...appPages.projectAppPages.subPages.projectDashboardPage}>
+					</NavItem> */}
+					{/* <NavItem {...appPages.projectAppPages.subPages.projectDashboardPage}>
 						<Badge
 							variant='outline'
 							color='emerald'
 							className='border-transparent leading-none'>
 							6
 						</Badge>
-					</NavItem>
+					</NavItem> */}
 
 					<NavTitle>Apps</NavTitle>
-					<NavCollapse
+					{/* <NavCollapse
 						text={appPages.salesAppPages.text}
 						to={appPages.salesAppPages.to}
 						icon={appPages.salesAppPages.icon}>
@@ -83,9 +83,9 @@ const DefaultAsideTemplate = () => {
 								{...appPages.salesAppPages.subPages.categoryPage.subPages.editPage}
 							/>
 						</NavCollapse>
-					</NavCollapse>
+					</NavCollapse> */}
 
-					<NavCollapse
+					{/* <NavCollapse
 						text={appPages.aiAppPages.text}
 						to={appPages.aiAppPages.to}
 						icon={appPages.aiAppPages.icon}>
@@ -127,9 +127,9 @@ const DefaultAsideTemplate = () => {
 								</Badge>
 							</NavItem>
 						</NavCollapse>
-					</NavCollapse>
+					</NavCollapse> */}
 
-					<NavCollapse
+					{/* <NavCollapse
 						text={appPages.crmAppPages.text}
 						to={appPages.crmAppPages.to}
 						icon={appPages.crmAppPages.icon}>
@@ -180,7 +180,33 @@ const DefaultAsideTemplate = () => {
 								6
 							</Badge>
 						</NavItem>
+					</NavCollapse> */}
+
+					<NavCollapse
+						text={appPages.strategyAppPages.text}
+						to={appPages.strategyAppPages.to}
+						icon={appPages.strategyAppPages.icon}>
+						<NavItem {...appPages.strategyAppPages.subPages.strategyDashboardPage} />
+						<NavCollapse
+							text={appPages.strategyAppPages.subPages.crossExchangeArbitrage.text}
+							to={appPages.strategyAppPages.subPages.crossExchangeArbitrage.to}
+							icon={appPages.strategyAppPages.subPages.crossExchangeArbitrage.icon}>
+							<NavItem {...appPages.strategyAppPages.subPages.crossExchangeArbitrage.subPages.signals} />
+							<NavItem {...appPages.strategyAppPages.subPages.crossExchangeArbitrage.subPages.orders} />
+							<NavItem {...appPages.strategyAppPages.subPages.crossExchangeArbitrage.subPages.trades} />
+							<NavItem {...appPages.strategyAppPages.subPages.crossExchangeArbitrage.subPages.positions} />
+						</NavCollapse>
+						<NavCollapse
+							text={appPages.strategyAppPages.subPages.triangularArbitrage.text}
+							to={appPages.strategyAppPages.subPages.triangularArbitrage.to}
+							icon={appPages.strategyAppPages.subPages.triangularArbitrage.icon}>
+							<NavItem {...appPages.strategyAppPages.subPages.triangularArbitrage.subPages.signals} />
+							<NavItem {...appPages.strategyAppPages.subPages.triangularArbitrage.subPages.orders} />
+							<NavItem {...appPages.strategyAppPages.subPages.triangularArbitrage.subPages.trades} />
+							<NavItem {...appPages.strategyAppPages.subPages.triangularArbitrage.subPages.positions} />
+						</NavCollapse>
 					</NavCollapse>
+
 					<NavItem
 						text={appPages.mailAppPages.text}
 						to={appPages.mailAppPages.subPages.inboxPages.to}
@@ -218,7 +244,7 @@ const DefaultAsideTemplate = () => {
 
 					<NavSeparator />
 
-					<NavTitle>Components & Templates</NavTitle>
+					{/* <NavTitle>Components & Templates</NavTitle>
 					<NavCollapse
 						text={componentsPages.uiPages.text}
 						to={componentsPages.uiPages.to}
@@ -300,9 +326,9 @@ const DefaultAsideTemplate = () => {
 						<NavItem {...componentsPages.integratedPages.subPages.waveSurferPage} />
 						<NavItem {...componentsPages.formPages.subPages.richTextPage} />
 						<NavItem {...componentsPages.formPages.subPages.selectReactPage} />
-					</NavCollapse>
+					</NavCollapse> */}
 
-					<NavCollapse
+					{/* <NavCollapse
 						text={componentsPages.iconsPage.text}
 						to={componentsPages.iconsPage.to}
 						icon={componentsPages.iconsPage.icon}>
@@ -323,7 +349,7 @@ const DefaultAsideTemplate = () => {
 								640
 							</Badge>
 						</NavItem>
-					</NavCollapse>
+					</NavCollapse> */}
 
 					<NavSeparator />
 					<NavTitle>Members</NavTitle>

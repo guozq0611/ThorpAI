@@ -20,52 +20,130 @@ export const examplePages = {
 };
 
 export const appPages = {
-	aiAppPages: {
-		id: 'aiApp',
-		to: '/ai',
-		text: 'AI',
+	strategyAppPages: {
+		id: 'strategyApp',
+		to: '/strategy',
+		text: '量化策略',
 		icon: 'HeroRocketLaunch',
 		subPages: {
-			aiDashboardPage: {
-				id: 'aiDashboardPage',
-				to: '/ai/dashboard',
-				text: 'AI Dashboard',
-				icon: 'HeroRocketLaunch',
+			strategyDashboardPage: {
+				id: 'strategyDashboardPage',
+				to: '/strategy/dashboard',
+				text: '策略概览',
+				icon: 'HeroChartBar',
 			},
-			chatPages: {
-				id: 'customerPage',
-				to: '/ai/chat',
-				text: 'Chat Pages',
-				icon: 'HeroChatBubbleLeft',
+			crossExchangeArbitrage: {
+				id: 'crossExchangeArbitrage',
+				to: '/strategy/cross-exchange',
+				text: '跨所套利策略',
+				icon: 'HeroArrowsRightLeft',
 				subPages: {
-					photoPage: {
-						id: 'photoPage',
-						to: '/ai/chat/photo',
-						text: 'Photo Editing',
-						icon: 'HeroPhoto',
+					signals: {
+						id: 'crossExchangeSignals',
+						to: '/strategy/cross-exchange/signals',
+						text: '交易信号',
+						icon: 'HeroBell',
 					},
-					videoPage: {
-						id: 'videoPage',
-						to: '/ai/chat/video',
-						text: 'Video Generation',
-						icon: 'HeroFilm',
+					orders: {
+						id: 'crossExchangeOrders',
+						to: '/strategy/cross-exchange/orders',
+						text: '委托订单',
+						icon: 'HeroClipboardDocumentList',
 					},
-					audioPage: {
-						id: 'audioPage',
-						to: '/ai/chat/audio',
-						text: 'Audio Generation',
-						icon: 'HeroMusicalNote',
+					trades: {
+						id: 'crossExchangeTrades',
+						to: '/strategy/cross-exchange/trades',
+						text: '成交订单',
+						icon: 'HeroCheckCircle',
 					},
-					codePage: {
-						id: 'audioPage',
-						to: '/ai/chat/code',
-						text: 'Code Generation',
-						icon: 'HeroCommandLine',
+					positions: {
+						id: 'crossExchangePositions',
+						to: '/strategy/cross-exchange/positions',
+						text: '策略持仓',
+						icon: 'HeroChartBar',
+					},
+				},
+			},
+			triangularArbitrage: {
+				id: 'triangularArbitrage',
+				to: '/strategy/triangular',
+				text: '三角套利',
+				icon: 'HeroTriangle',
+				subPages: {
+					signals: {
+						id: 'triangularSignals',
+						to: '/strategy/triangular/signals',
+						text: '交易信号',
+						icon: 'HeroBell',
+					},
+					orders: {
+						id: 'triangularOrders',
+						to: '/strategy/triangular/orders',
+						text: '委托订单',
+						icon: 'HeroClipboardDocumentList',
+					},
+					trades: {
+						id: 'triangularTrades',
+						to: '/strategy/triangular/trades',
+						text: '成交订单',
+						icon: 'HeroCheckCircle',
+					},
+					positions: {
+						id: 'triangularPositions',
+						to: '/strategy/triangular/positions',
+						text: '策略持仓',
+						icon: 'HeroChartBar',
 					},
 				},
 			},
 		},
 	},
+	// aiAppPages: {
+	// 	id: 'aiApp',
+	// 	to: '/ai',
+	// 	text: '人工智能',
+	// 	icon: 'HeroRocketLaunch',
+	// 	subPages: {
+	// 		aiDashboardPage: {
+	// 			id: 'aiDashboardPage',
+	// 			to: '/ai/dashboard',
+	// 			text: 'AI Dashboard',
+	// 			icon: 'HeroRocketLaunch',
+	// 		},
+	// 		chatPages: {
+	// 			id: 'customerPage',
+	// 			to: '/ai/chat',
+	// 			text: 'Chat Pages',
+	// 			icon: 'HeroChatBubbleLeft',
+	// 			subPages: {
+	// 				photoPage: {
+	// 					id: 'photoPage',
+	// 					to: '/ai/chat/photo',
+	// 					text: 'Photo Editing',
+	// 					icon: 'HeroPhoto',
+	// 				},
+	// 				videoPage: {
+	// 					id: 'videoPage',
+	// 					to: '/ai/chat/video',
+	// 					text: 'Video Generation',
+	// 					icon: 'HeroFilm',
+	// 				},
+	// 				audioPage: {
+	// 					id: 'audioPage',
+	// 					to: '/ai/chat/audio',
+	// 					text: 'Audio Generation',
+	// 					icon: 'HeroMusicalNote',
+	// 				},
+	// 				codePage: {
+	// 					id: 'audioPage',
+	// 					to: '/ai/chat/code',
+	// 					text: 'Code Generation',
+	// 					icon: 'HeroCommandLine',
+	// 				},
+	// 			},
+	// 		},
+	// 	},
+	// },
 	salesAppPages: {
 		id: 'salesApp',
 		to: '/sales',
@@ -217,7 +295,7 @@ export const appPages = {
 	educationAppPages: {
 		id: 'educationApp',
 		to: '/education',
-		text: '量化策略',
+		text: '知识库',
 		icon: 'HeroAcademicCap',
 		subPages: {
 			educationDashboardPage: {
