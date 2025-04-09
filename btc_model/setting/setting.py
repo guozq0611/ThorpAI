@@ -15,6 +15,7 @@ SETTINGS: Dict[str, Any] = {
     },
 
 
+
     "font.family": "微软雅黑",
     "font.size": 12,
 
@@ -29,6 +30,10 @@ SETTINGS: Dict[str, Any] = {
     "email.password": "",
     "email.sender": "",
     "email.receiver": "",
+
+    # 配置websocket server
+    "websocket.server.host": "0.0.0.0",
+    "websocket.server.port": 8001,
 
     # 配置需要订阅的市场数据
     "market_data_service.exchanges": ['binance', 'okx'],

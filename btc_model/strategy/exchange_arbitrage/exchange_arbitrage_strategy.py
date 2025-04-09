@@ -23,6 +23,11 @@ from btc_model.trade.arbitrage_position_manager import ArbitragePositionManager
 from btc_model.core.util.crypto_util import CryptoUtil
 from btc_model.core.util.db_util import DBUtil
 
+from btc_model.strategy.exchange_arbitrage.object import ArbitrageSignal
+from btc_model.core.backend.websocket_service import WebSocketService
+# from btc_model.manager.service_manager import service_manager
+from btc_model.manager.instance_manager import set_instance, register_instance
+
 class CommonParams(NamedTuple):
     """
     通用参数
@@ -138,6 +143,7 @@ class ExchangeArbitrageStrategy:
         # 获取或创建上下文实例
         self.context = context if context else Context()
         self.market_data_service: MarketDataService = self.context.market_data_service
+        self.service_manager = self.context.service_manager
         self.context.strategy_params = self.strategy_params
         self.perpetual_markets = self.context.perpetual_markets
 
@@ -177,6 +183,7 @@ class ExchangeArbitrageStrategy:
         #         'timestamp': 0
         #     }
         
+        self.websocket_service: WebSocketService = self.service_manager.get_websocket_service()
         # 启动监控线程
         self.is_running = True
         self.monitor_thread = threading.Thread(target=self._monitor_arbitrage_opportunities, daemon=True)
@@ -272,28 +279,44 @@ class ExchangeArbitrageStrategy:
             # 获取交易所1的订单簿数据
             bbo_a = self.market_data_service.get_bbo(self.exchange_1.id, symbol_id)
             if bbo_a['bid_price'] and bbo_a['ask_price'] and self.market_data_service.is_data_fresh('bbo', self.exchange_1.id, symbol_id):
-                self.pair_data[symbol_id]['price_a'] = {
-                    'bid': bbo_a['bid_price'],
-                    'ask': bbo_a['ask_price']
+                self.pair_data[symbol_id]['price_1'] = {
+                    'bid_price': bbo_a['bid_price'],
+                    'bid_volume': bbo_a['bid_volume'],
+                    'ask_price': bbo_a['ask_price'],
+                    'ask_volume': bbo_a['ask_volume'],
+                    'updatetime': bbo_a['timestamp']
                 }
             
             # 获取交易所2的订单簿数据
             bbo_b = self.market_data_service.get_bbo(self.exchange_2.id, symbol_id)
             if bbo_b['bid_price'] and bbo_b['ask_price'] and self.market_data_service.is_data_fresh('bbo', self.exchange_2.id, symbol_id):
-                self.pair_data[symbol_id]['price_b'] = {
-                    'bid': bbo_b['bid_price'],
-                    'ask': bbo_b['ask_price']
+                self.pair_data[symbol_id]['price_2'] = {
+                    'bid_price': bbo_b['bid_price'],
+                    'bid_volume': bbo_b['bid_volume'],
+                    'ask_price': bbo_b['ask_price'],
+                    'ask_volume': bbo_b['ask_volume'],
+                    'updatetime': bbo_b['timestamp']
                 }
 
             swap_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
             bbo_hedge = self.market_data_service.get_bbo(self.hedge_exchange.id, swap_symbol)
             if bbo_hedge['bid_price'] and bbo_hedge['ask_price'] and self.market_data_service.is_data_fresh('bbo', self.hedge_exchange.id, swap_symbol):
                 self.pair_data[symbol_id]['price_hedge'] = {
-                    'bid': bbo_hedge['bid_price'],
-                    'ask': bbo_hedge['ask_price']
+                    'bid_price': bbo_hedge['bid_price'],
+                    'bid_volume': bbo_hedge['bid_volume'],
+                    'ask_price': bbo_hedge['ask_price'],
+                    'ask_volume': bbo_hedge['ask_volume'],
+                    'updatetime': bbo_hedge['timestamp']
                 }
             
-            # 更新时间戳
+            if bbo_a:
+                self.pair_data[symbol_id]['exchange_1_updatetime'] = bbo_a['timestamp']
+            if bbo_b:
+                self.pair_data[symbol_id]['exchange_2_updatetime'] = bbo_b['timestamp']
+            if bbo_hedge:
+                self.pair_data[symbol_id]['exchange_hedge_updatetime'] = bbo_hedge['timestamp']
+            
+               # 更新时间戳
             self.pair_data[symbol_id]['timestamp'] = int(time.time() * 1000)
         except Exception as e:
             Logger.error(f"更新交易对数据异常: {symbol_id}, 错误: {str(e)}")
@@ -302,47 +325,170 @@ class ExchangeArbitrageStrategy:
         """带校验的价差计算"""
         data = self.pair_data[symbol_id]
         try:
-            if data['price_a'] and data['price_b']:
+            if data['price_1'] and data['price_2']:
                 # 作为a的买方，监控 price_b['ask'] / price_a['bid'] - 1 的价差
-                spread_buy_a = (data['price_b']['ask'] / data['price_a']['bid']) - 1
+                spread_buy_a = (data['price_2']['ask_price'] / data['price_1']['bid_price']) - 1
                 # 作为b的买方，监控 price_a['ask'] / price_b['bid'] - 1 的价差
-                spread_buy_b = (data['price_a']['ask'] / data['price_b']['bid']) - 1
+                spread_buy_b = (data['price_1']['ask_price'] / data['price_2']['bid_price']) - 1
                 
                 # 取两个价差中的较大值作为最终价差
                 spread = max(spread_buy_a, spread_buy_b)
                 data['spread'] = spread
-                
+                data['signal'] = ''
                 # 更新套利方向和注释
                 if spread_buy_a > spread_buy_b:
                     data['comment'] = (
-                        f'【{self.exchange_1.id}】 买入 {data["price_a"]["bid"]}, '
-                        f'【{self.exchange_2.id}】 卖出 {data["price_b"]["ask"]}'
+                        f'【{self.exchange_1.id}】 买入 {data["price_1"]["bid_price"]}, '
+                        f'【{self.exchange_2.id}】 卖出 {data["price_2"]["ask_price"]}'
                     )
+                    data['signal'] = 'buy'
                 else:
                     data['comment'] = (
-                        f'【{self.exchange_2.id}】 买入 {data["price_b"]["bid"]}, '
-                        f'【{self.exchange_1.id}】 卖出 {data["price_a"]["ask"]}'
+                        f'【{self.exchange_1.id}】 卖出 {data["price_1"]["ask_price"]}, '
+                        f'【{self.exchange_2.id}】 买入 {data["price_2"]["bid_price"]}'
+                        
                     )
+                    data['signal'] = 'sell'
 
-                # 触发报警的价差阈值
-                if spread > 0.003:  
-                    self.trigger_arbitrage(symbol_id)
+                self.broadcast_arbitrage_signal(symbol_id, data)
+                # # 触发报警的价差阈值
+                # #if spread > 0.000:  
+                # self.broadcast_arbitrage_signal(symbol_id, data)
         except (TypeError, ZeroDivisionError, KeyError) as e:
             Logger.error(f"价差计算错误 {symbol_id}: {str(e)}")
-    
-    def trigger_arbitrage(self, symbol_id):
-        """触发套利信号"""
-        symbol_hedge = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
 
-        data = self.pair_data[symbol_id]
-        
+    def broadcast_arbitrage_signal(self, symbol_id: str, data: dict):
+        """广播套利信号"""
+        hedge_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
+    
         Logger.info(
             f"套利信号触发: {symbol_id:<15} 价差: {data['spread']:>6.2%}, {data['comment']}"
         )
+
+    
         
-        volume = self.strategy_params.capital_limit_params.max_amount_per_pair / ((data['price_a']['bid'] + data['price_b']['ask']) / 2)
         
+        arbitrage_position = self.position_manager.get_arbitrage_position(symbol_id)
+        if arbitrage_position:
+            leg1_position = arbitrage_position.leg_spot_1.volume
+            leg2_position = arbitrage_position.leg_spot_2.volume
+            leg_swap_position = arbitrage_position.leg_swap.volume
+        else:
+            leg1_position = 0
+            leg2_position = 0
+            leg_swap_position = 0
+            
+        signal = ArbitrageSignal(
+            symbol=symbol_id,
+            exchange_1=self.exchange_1.id,
+            exchange_2=self.exchange_2.id,
+            exchange_1_bid_price=data['price_1']['bid_price'],
+            exchange_1_bid_volume=data['price_1']['bid_volume'],
+            exchange_1_ask_price=data['price_1']['ask_price'],
+            exchange_1_ask_volume=data['price_1']['ask_volume'],
+            exchange_1_position=leg1_position,
+            exchange_1_updatetime=data['exchange_1_updatetime'],
+            exchange_2_bid_price=data['price_2']['bid_price'],
+            exchange_2_bid_volume=data['price_2']['bid_volume'],
+            exchange_2_ask_price=data['price_2']['ask_price'],
+            exchange_2_ask_volume=data['price_2']['ask_volume'],
+            exchange_2_position=leg2_position,
+            exchange_2_updatetime=data['exchange_2_updatetime'],
+            hedge_exchange=self.hedge_exchange.id,
+            hedge_symbol=hedge_symbol,
+            hedge_contract_size=data['hedge_contract_size'],
+            hedge_position=leg_swap_position,
+            hedge_updatetime=data['exchange_hedge_updatetime'],
+            signal=data['signal'],
+            spread=data['spread'],
+            status="open",
+            comment=data['comment'],
+            timestamp=time.time()
+        )
+
+        # 修改原来的调用方式
+        try:
+            # 创建一个线程安全的事件循环策略
+            from concurrent.futures import ThreadPoolExecutor
+            
+            # 将异步调用放入一个独立的任务中执行
+            def send_signal_task():
+                # 在新线程中创建新的事件循环
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    # 在事件循环中执行异步调用
+                    loop.run_until_complete(self.websocket_service.add_signal(signal.to_dict()))
+                finally:
+                    loop.close()
+            
+            # 使用线程池执行任务
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(send_signal_task)
+                
+            # 记录成功消息
+            Logger.info(f"套利信号已发送: {symbol_id}")
+        except Exception as e:
+            Logger.error(f"发送套利信号失败: {e}")
+
+    
+    def trigger_arbitrage(self, symbol_id: str, data: dict):
+        """触发套利信号"""
+        hedge_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
+    
+        volume = self.strategy_params.capital_limit_params.max_amount_per_pair / ((data['price_1']['bid_price'] + data['price_2']['ask_price']) / 2)
         # 从symbol_a的角度计算
+        if volume < data['trading_limits_a']['amount']['min']:
+            volume = data['trading_limits_a']['amount']['min']
+
+        if data['trading_limits_b']['cost']['min'] is not None:
+            volume = min(volume, data['trading_limits_a']['cost']['min'] / max(data['price_a']['bid'], data['price_a']['ask']))
+
+        # 从symbol_b的角度计算
+        if volume < data['trading_limits_b']['amount']['min']:
+            volume = data['trading_limits_b']['amount']['min']
+
+        if data['trading_limits_b']['cost']['min'] is not None:
+            volume = min(volume, data['trading_limits_b']['cost']['min'] / max(data['price_b']['bid'], data['price_b']['ask']))
+
+
+        position = self.position_manager.get_arbitrage_position(symbol_id)
+        if not position or position.swap_position == 0:
+            # 从symbol_hedge的角度计算
+            # 按10倍杠杆计算
+            position_risk = CryptoUtil.get_position_risk(self.hedge_exchange, hedge_symbol, 10)
+            max_position = position_risk['max_position']
+            contract_size = position_risk['contract_size']
+            if volume / contract_size > max_position:
+                Logger.warning(f"无非执行该套利信号, 杠杆过高: {hedge_symbol}, 杠杆: {volume / contract_size}, 最大仓位: {max_position}")
+                return
+    
+            self.position_manager.create_arbitrage_position(symbol_id=symbol_id, volume=volume)
+        else:
+            # 如果仓位存在，则更新仓位
+            self.position_manager.execute_arbitrage(symbol_id=symbol_id, volume=volume, exchange_pair=(self.exchange_1, self.exchange_2))
+        
+        # 这里可以添加自动交易逻辑
+        # 例如调用 position_manager.create_arbitrage_position(pair_key, data)
+    
+    def stop(self):
+        """停止策略"""
+        self.is_running = False
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=5)
+        Logger.info("跨交易所套利策略已停止")
+
+    async def execute_arbitrage(self, signal: ArbitrageSignal):
+        """
+        执行套利信号
+        """
+        symbol_id = signal.symbol
+        symbol_hedge = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
+        
+        data = self.pair_data[signal.symbol]
+
+        # 从symbol_a的角度计算
+        volume = signal.volume
         if volume < data['trading_limits_a']['amount']['min']:
             volume = data['trading_limits_a']['amount']['min']
 
@@ -372,16 +518,8 @@ class ExchangeArbitrageStrategy:
         else:
             # 如果仓位存在，则更新仓位
             self.position_manager.execute_arbitrage(symbol_id=symbol_id, volume=volume, exchange_pair=(self.exchange_1, self.exchange_2))
+     
         
-        # 这里可以添加自动交易逻辑
-        # 例如调用 position_manager.create_arbitrage_position(pair_key, data)
-    
-    def stop(self):
-        """停止策略"""
-        self.is_running = False
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=5)
-        Logger.info("跨交易所套利策略已停止")
     
     async def execute(self):
         """执行策略的主要逻辑"""
@@ -503,6 +641,7 @@ def load_pairs():
     return pairs
 
 def run():
+    from btc_model.manager.service_manager import service_manager 
     # 创建MarketDataService实例
     market_data_service = MarketDataService()
     
@@ -526,7 +665,7 @@ def run():
  
     context = Context.get_instance()
     context.market_data_service = market_data_service
-    
+    context.service_manager = service_manager
 
     is_live = get_settings('trade')['live_mode']
     if is_live:
@@ -566,16 +705,23 @@ def run():
             continue
 
         symbol = symbol_a
-        symbol_hedge = CryptoUtil.convert_symbol_to_contract(hedge_exchange, symbol)
+        hedge_symbol = CryptoUtil.convert_symbol_to_contract(hedge_exchange, symbol)
 
         pair_key = symbol_a
         pair_data[pair_key] = {
-            'trading_limits_a': CryptoUtil.get_trading_limits(exchange_1, symbol),
-            'trading_limits_b': CryptoUtil.get_trading_limits(exchange_2, symbol),
-            'trading_limits_hedge': CryptoUtil.get_trading_limits(hedge_exchange, symbol_hedge),
-            'price_a': None,
-            'price_b': None,
+            'symbol': symbol,
+            'exchange_1': exchange_1,
+            'exchange_2': exchange_2,
+            'exchange_hedge': hedge_exchange,
+            'hedge_symbol': hedge_symbol,
+            'hedge_contract_size': perpetual_markets[hedge_symbol]['contract_size'],
+            'trading_limits_1': CryptoUtil.get_trading_limits(exchange_1, symbol),
+            'trading_limits_2': CryptoUtil.get_trading_limits(exchange_2, symbol),
+            'trading_limits_hedge': CryptoUtil.get_trading_limits(hedge_exchange, hedge_symbol),
+            'price_1': None,
+            'price_2': None,
             'price_hedge': None,
+            'signal': '',
             'spread': 0,
             'comment': '',
             'timestamp': 0
@@ -592,6 +738,9 @@ def run():
         pair_data=pair_data,
         context=context
     )
+
+    set_instance("exchange_arbitrage_strategy", strategy)
+
     
     Logger.info("跨交易所套利监控程序已启动")
 

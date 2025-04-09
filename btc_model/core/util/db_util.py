@@ -1,7 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy import text
 
-from btc_model.core.common.singleton import singleton
 from btc_model.setting.setting import get_settings
 
 settings = get_settings('database.mysql')
@@ -27,7 +26,7 @@ def get_db_engine(database_name=''):
     _db_engine = create_engine(db_link, echo=False, max_overflow=10, pool_size=50, pool_reset_on_return=None)
     return _db_engine
 
-@singleton
+
 class DBUtil:
     def __init__(self):
         self.db_engine = get_db_engine(DB_DATABASE)

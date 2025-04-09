@@ -25,6 +25,7 @@ from btc_model.core.common.const import PositionSide, Exchange, Direction, Offse
 from btc_model.core.common.object import OrderData, OrderRequest
 from collections import defaultdict
 from btc_model.core.engine.event_engine import EventEngine, Event
+from btc_model.manager.instance_manager import get_instance
 
 class ArbitragePositionManager(PositionManager):
     """
@@ -42,8 +43,15 @@ class ArbitragePositionManager(PositionManager):
 
         self.context = context
         self.market_data_service: MarketDataService = context.market_data_service
+        self.service_manager = context.service_manager
+
+        self.websocket_service = self.service_manager.get_websocket_service()
+        if self.websocket_service is None:
+            Logger.warning(f"获取WebSocket服务实例失败: {e}，将无法推送订单数据到前端")
+
         self.perpetual_markets = context.perpetual_markets
         
+       
      
         self.active_orders: Dict[str, ArbitrageOrder | ArbitrageHedgeOrder] = {}
         # 当前正在交易中的货币对, 为了防止重复创建仓位, 如果int > 0 表示有正在进行中的货币对
@@ -937,6 +945,26 @@ class ArbitragePositionManager(PositionManager):
             # 触发取消事件
             self.event_engine.put_event(EventType.ON_CANCEL, order_data)
 
+        # 先在活跃订单中查找并更新
+        for arb_id, arb_order in self.active_orders.items():
+            for leg_name, leg_order in arb_order.legs.items():
+                if leg_order.client_id == order_data.client_id or leg_order.order_id == order_data.order_id:
+                    leg_order.copy_from(order_data)
+                    # 推送更新后的订单数据到WebSocket
+                    self.push_order_to_websocket(leg_order)
+                    break
+        
+        # 如果是仓位的一部分，更新仓位并推送
+        for symbol_id, position in self.position_holder.items():
+            # 检查是否需要更新仓位数据
+            updated = False
+            
+            # 这里根据实际情况添加仓位更新逻辑
+            # 如果仓位有更新，则标记updated = True
+            
+            if updated:
+                # 推送更新后的仓位数据到WebSocket
+                self.push_position_to_websocket(position)
 
     def send_spot_order(
             self,
@@ -974,6 +1002,9 @@ class ArbitragePositionManager(PositionManager):
             # 触发取消事件
             self.event_engine.put_event(EventType.ON_ORDER, order)
 
+            # 将订单推送到WebSocket服务
+            self.push_order_to_websocket(order)
+            
             return order
         except Exception as e:
             Logger.error(f"发送订单失败: {e}")
@@ -1033,6 +1064,9 @@ class ArbitragePositionManager(PositionManager):
             order.offset = offset
             # 触发取消事件
             self.event_engine.put_event(EventType.ON_ORDER, order)
+
+            # 将订单推送到WebSocket服务
+            self.push_order_to_websocket(order)
 
             return order
         except Exception as e:
@@ -1243,6 +1277,127 @@ class ArbitragePositionManager(PositionManager):
                 'liquidation_price': 0,
                 'max_position_size': 0
             }
+
+    # 向WebSocket服务发送订单数据
+    def push_order_to_websocket(self, order_data: OrderData):
+        """
+        将订单数据推送到WebSocket服务
+        """
+        if not self.websocket_service:
+            return
+            
+        try:
+            # 转换OrderData为前端需要的字典格式
+            order_dict = {
+                "id": order_data.order_id or order_data.client_id,
+                "symbol": order_data.symbol,
+                "side": "buy" if order_data.direction == Direction.BUY else "sell",
+                "price": order_data.price,
+                "volume": order_data.volume,
+                "status": self._convert_order_status(order_data.status),
+                "exchange": str(order_data.exchange).split(".")[-1],
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "volume_traded": order_data.volume_traded
+            }
+            
+            # 使用asyncio创建一个临时事件循环来执行异步函数
+            def add_order_task():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self.websocket_service.add_order(order_dict))
+                finally:
+                    loop.close()
+            
+            # 在新线程中运行异步任务
+            threading.Thread(target=add_order_task).start()
+            
+        except Exception as e:
+            Logger.error(f"推送订单数据到WebSocket服务失败: {e}")
+            
+    # 向WebSocket服务发送持仓数据
+    def push_position_to_websocket(self, position: ArbitragePosition):
+        """
+        将持仓数据推送到WebSocket服务
+        """
+        if not self.websocket_service:
+            return
+            
+        try:
+            # 为每个腿创建持仓记录
+            positions = []
+            
+            # 现货腿1
+            if position.leg_spot_1.volume != 0:
+                positions.append({
+                    "id": f"{position.symbol_id}_spot1_{int(time.time())}",
+                    "symbol": position.symbol_id,
+                    "exchange": str(position.exchange_spot_1.id),
+                    "volume": position.leg_spot_1.volume,
+                    "entryPrice": position.leg_spot_1.price,
+                    "currentPrice": position.leg_spot_1.price,  # 可以后续更新
+                    "pnl": 0,  # 可以后续计算
+                    "status": "open" if position.leg_spot_1.volume > 0 else "closed",
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                
+            # 现货腿2
+            if position.leg_spot_2.volume != 0:
+                positions.append({
+                    "id": f"{position.symbol_id}_spot2_{int(time.time())}",
+                    "symbol": position.symbol_id,
+                    "exchange": str(position.exchange_spot_2.id),
+                    "volume": position.leg_spot_2.volume,
+                    "entryPrice": position.leg_spot_2.price,
+                    "currentPrice": position.leg_spot_2.price,  # 可以后续更新
+                    "pnl": 0,  # 可以后续计算
+                    "status": "open" if position.leg_spot_2.volume > 0 else "closed",
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+                
+            # 合约腿
+            if position.leg_swap.volume != 0:
+                positions.append({
+                    "id": f"{position.symbol_id}_swap_{int(time.time())}",
+                    "symbol": position.symbol_hedge,
+                    "exchange": str(position.exchange_swap.id),
+                    "volume": position.leg_swap.volume,
+                    "entryPrice": position.leg_swap.price,
+                    "currentPrice": position.leg_swap.price,  # 可以后续更新
+                    "pnl": 0,  # 可以后续计算
+                    "status": "open" if position.leg_swap.volume != 0 else "closed",
+                    "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+            
+            # 推送每个持仓数据
+            for pos in positions:
+                def add_position_task(pos_data):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(self.websocket_service.add_position(pos_data))
+                    finally:
+                        loop.close()
+                
+                threading.Thread(target=add_position_task, args=(pos,)).start()
+                
+        except Exception as e:
+            Logger.error(f"推送持仓数据到WebSocket服务失败: {e}")
+    
+    def _convert_order_status(self, status: OrderStatus) -> str:
+        """
+        将内部OrderStatus转换为前端可识别的状态字符串
+        """
+        status_map = {
+            OrderStatus.NONE: "pending",
+            OrderStatus.SUBMITTING: "pending",
+            OrderStatus.OPEN: "open",
+            OrderStatus.EXPIRED: "expired",
+            OrderStatus.REJECTED: "rejected",
+            OrderStatus.CANCELLED: "canceled",
+            OrderStatus.CLOSED: "closed"
+        }
+        return status_map.get(status, "unknown")
 
 def test_arbitrage_position_manager():
     from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import setup_exchanges, load_pairs

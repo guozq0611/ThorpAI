@@ -19,6 +19,7 @@ btc_model/ui/fyr-next/package-lock.json
 btc_model/ui/fyr-next/yarn.lock
 btc_model/ui/fyr-next/package-lock.json
 btc_model/strategy/exchange_arbitrage/
+/node_modules
 # Python
 __pycache__/
 *.py[cod]

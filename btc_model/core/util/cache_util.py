@@ -1,5 +1,5 @@
 from time import time
-from btc_model.core.common.singleton import singleton
+from singleton_decorator import singleton
 
 
 @singleton
