@@ -1,14 +1,16 @@
 import ccxt
-from typing import Dict, Optional, List, Union
+import ccxt.pro
+from typing import Dict, Optional, List, Union, Any
 from decimal import Decimal
 import numpy as np
-from datetime import datetime
+import datetime
+import time
 
 from btc_model.setting.setting import get_settings
 from btc_model.core.common.singleton import Singleton
 from btc_model.core.common.object import OrderData
 from btc_model.core.common.const import Exchange, OrderStatus, Direction, OrderType, Offset, PositionSide
-
+from btc_model.core.util.log_util import Logger
 
 # Order type map
 ORDERTYPE_2CCXT: dict[OrderType, str] = {
@@ -689,6 +691,83 @@ class CryptoUtil:
             return {}
         except:
             return {}
+        
+    @staticmethod
+    def get_funding_rate_history(exchange: ccxt.Exchange,  symbols: list, start_dt: Optional[datetime.datetime] = None, end_dt: Optional[datetime.datetime] = None, limit: int = None, params: dict = None) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        获取合约的资金费率历史数据
+        
+        Args:
+            exchange: ccxt交易所实例
+            symbol: 合约符号
+            limit: 获取的条数
+            
+        Returns:
+            List[Dict]: 资金费率历史数据    
+        """
+        all_funding_rates: Dict[str, List[Dict[str, Any]]] = {}
+
+        try:
+    
+            if not exchange.has['fetchFundingRateHistory']:
+                print(f"错误：交易所 {exchange.id} 不支持获取资金费率历史。")
+                return {"error": f"Exchange {exchange.id} does not support fetchFundingRateHistory"}
+
+            exchange.load_markets()
+
+            print(f"已加载交易所 {exchange.id} 的市场信息。")
+
+            since_ms = int(start_dt.timestamp() * 1000) if start_dt else None
+            end_ms = int(end_dt.timestamp() * 1000) if end_dt else None
+
+            for symbol in symbols:
+                if symbol not in exchange.symbols:
+                    print(f"警告：交易对 {symbol} 在交易所 {exchange.id} 未找到。跳过。")
+                    all_funding_rates[symbol] = []
+                    continue
+
+                try:
+                    print(f"  正在获取 {symbol} 的历史资金费率...")
+                    # 获取历史资金费率
+                    # 注意：ccxt 的 fetch_funding_rate_history 通常只接受 since 和 limit
+                    # 如果需要获取到 end_dt，可能需要设置一个足够大的 limit 或进行多次调用
+                    # 这里使用 limit，实际应用中可能需要分页
+                    funding_rates = exchange.fetch_funding_rate_history(
+                        symbol,
+                        since=since_ms,
+                        limit=limit, # 使用传入的 limit
+                        params={} if params is None else params
+                    )
+
+                    # 如果设置了 end_dt，则在客户端过滤数据
+                    if end_ms is not None and funding_rates:
+                        filtered_rates = [
+                            rate for rate in funding_rates if rate.get('timestamp') is not None and rate['timestamp'] <= end_ms
+                        ]
+                        all_funding_rates[symbol] = filtered_rates
+                        print(f"  成功获取并过滤 {len(filtered_rates)} 条 {symbol} 的数据，至 {end_dt}。")
+                    else:
+                        all_funding_rates[symbol] = funding_rates if funding_rates else []
+                        print(f"  成功获取 {len(all_funding_rates[symbol])} 条 {symbol} 的数据。")
+
+                    # 为了遵守交易所的请求频率限制，在每次调用之间稍作停顿
+                    time.sleep(exchange.rateLimit / 1000 + 0.1)
+
+                except ccxt.NetworkError as e:
+                    print(f"网络错误获取 {symbol} 数据: {e}")
+                    all_funding_rates[symbol] = []
+                except ccxt.ExchangeError as e:
+                    print(f"交易所错误获取 {symbol} 数据: {e}")
+                    all_funding_rates[symbol] = []
+                except Exception as e:
+                    print(f"获取 {symbol} 数据时发生未知错误: {e}")
+                    all_funding_rates[symbol] = []
+
+        except Exception as e:
+            print(f"交易所初始化或检查时发生错误: {e}")
+            return {"error": f"交易所初始化或检查失败: {e}"}
+
+        return all_funding_rates
             
     @staticmethod
     def get_position_risk(exchange: ccxt.Exchange, symbol: str, 
@@ -748,92 +827,127 @@ class CryptoUtil:
             raise Exception(f"计算仓位风险失败: {str(e)}")
 
     @staticmethod
-    def compare_currency_info(exchange_a: ccxt.Exchange, exchange_b: ccxt.Exchange) -> Dict:
+    def compare_currency_info(exchange_a, exchange_b, symbols: List[str] = None, full_comparison: bool = False) -> Dict:
         """
-        比较两个交易所的币种信息，找出同名但可能不同的币种
-        
+        比较两个交易所的币种信息, 找出可能存在的差异和风险
         Args:
-            exchange_a: 第一个交易所实例
-            exchange_b: 第二个交易所实例
-            
+            exchange_a: 第一个交易所
+            exchange_b: 第二个交易所
+            symbols: 需要比较的交易对列表
+            full_comparison: 是否进行完整比较 (包括所有交易对的价格差异等)
         Returns:
-            Dict: {
-                'suspicious_pairs': [  # 可疑的同名不同币
-                    {
-                        'symbol': 币种符号,
-                        'exchange_a': {
-                            'name': 交易所A中的名称,
-                            'network': 支持的网络,
-                            'contract': 合约地址
-                        },
-                        'exchange_b': {
-                            'name': 交易所B中的名称,
-                            'network': 支持的网络,
-                            'contract': 合约地址
-                        }
-                    }
-                ],
-                'network_mismatch': [  # 网络支持不同的币种
-                    {
-                        'symbol': 币种符号,
-                        'exchange_a_networks': [网络列表],
-                        'exchange_b_networks': [网络列表]
-                    }
-                ]
-            }
+            比较结果
         """
         try:
             # 获取两个交易所的币种信息
-            currencies_a = exchange_a.fetch_currencies()
-            currencies_b = exchange_b.fetch_currencies()
+            a_currencies = exchange_a.fetch_currencies() if hasattr(exchange_a, 'fetch_currencies') else {}
+            b_currencies = exchange_b.fetch_currencies() if hasattr(exchange_b, 'fetch_currencies') else {}
             
-            # 找出两个交易所都支持的币种
-            common_symbols = set(currencies_a.keys()) & set(currencies_b.keys())
+            # 如果两个交易所都不支持获取币种信息, 返回空结果
+            if not a_currencies and not b_currencies:
+                return {
+                    'common_symbols': [],
+                    'suspicious_pairs': [],
+                    'network_mismatch': []
+                }
             
+            # 获取两个交易所共同支持的币种
+            a_symbols = set(a_currencies.keys())
+            b_symbols = set(b_currencies.keys())
+            common_symbols = list(a_symbols & b_symbols)
+            
+            # 如果指定了交易对列表, 筛选出存在于共同币种中的交易对
+            if symbols:
+                base_currencies = [s.split('/')[0] for s in symbols]
+                common_symbols = [s for s in common_symbols if s in base_currencies]
+            
+            # 找出可疑的币种配对 (可能是同名但实际上不同的币种)
             suspicious_pairs = []
             network_mismatch = []
             
             for symbol in common_symbols:
-                currency_a = currencies_a[symbol]
-                currency_b = currencies_b[symbol]
+                a_info = a_currencies[symbol] if symbol in a_currencies else {}
+                b_info = b_currencies[symbol] if symbol in b_currencies else {}
                 
-                # 获取币种在两个交易所的网络信息
-                networks_a = CryptoUtil._get_currency_networks(currency_a)
-                networks_b = CryptoUtil._get_currency_networks(currency_b)
+                # 获取币种在两个交易所支持的网络
+                a_networks = CryptoUtil._get_currency_networks(a_info)
+                b_networks = CryptoUtil._get_currency_networks(b_info)
                 
-                # 检查网络支持是否不同
-                if networks_a != networks_b:
+                # 网络支持不同, 记录差异
+                if a_networks and b_networks and set(a_networks) != set(b_networks):
                     network_mismatch.append({
                         'symbol': symbol,
-                        'exchange_a_networks': networks_a,
-                        'exchange_b_networks': networks_b
+                        'exchange_a': exchange_a.id,
+                        'exchange_b': exchange_b.id,
+                        'exchange_a_networks': a_networks,
+                        'exchange_b_networks': b_networks
                     })
                 
-                # 检查可疑的同名不同币
-                if CryptoUtil._is_suspicious_currency(currency_a, currency_b, networks_a, networks_b):
+                # 检查是否为可疑币种 (同名不同币)
+                if CryptoUtil._is_suspicious_currency(a_info, b_info):
                     suspicious_pairs.append({
                         'symbol': symbol,
-                        'exchange_a': {
-                            'name': currency_a.get('name'),
-                            'network': networks_a,
-                            'contract': CryptoUtil._get_contract_addresses(currency_a)
-                        },
-                        'exchange_b': {
-                            'name': currency_b.get('name'),
-                            'network': networks_b,
-                            'contract': CryptoUtil._get_contract_addresses(currency_b)
-                        }
+                        'exchange_a': exchange_a.id,
+                        'exchange_b': exchange_b.id,
+                        'reason': '合约地址不同或网络支持完全不同'
                     })
             
-            return {
+            result = {
+                'common_symbols': common_symbols,
                 'suspicious_pairs': suspicious_pairs,
                 'network_mismatch': network_mismatch
             }
             
-        except ccxt.ExchangeError as e:
-            raise Exception(f"比较币种信息失败: {str(e)}")
+            # 如果需要完整比较, 添加价格偏差等信息
+            if full_comparison and symbols:
+                price_deviations = []
+                volume_deviations = []
+                
+                for symbol in symbols:
+                    try:
+                        a_ticker = exchange_a.fetch_ticker(symbol)
+                        b_ticker = exchange_b.fetch_ticker(symbol)
+                        
+                        # 计算价格偏差
+                        if a_ticker and b_ticker and a_ticker['last'] and b_ticker['last']:
+                            price_diff_pct = abs(a_ticker['last'] - b_ticker['last']) / max(a_ticker['last'], b_ticker['last'])
+                            
+                            price_deviations.append({
+                                'symbol': symbol,
+                                'exchange_a_price': a_ticker['last'],
+                                'exchange_b_price': b_ticker['last'],
+                                'deviation': price_diff_pct
+                            })
+                        
+                        # 计算交易量偏差
+                        if a_ticker and b_ticker and a_ticker['quoteVolume'] and b_ticker['quoteVolume']:
+                            volume_diff_pct = abs(a_ticker['quoteVolume'] - b_ticker['quoteVolume']) / max(a_ticker['quoteVolume'], b_ticker['quoteVolume'])
+                            
+                            volume_deviations.append({
+                                'symbol': symbol,
+                                'exchange_a_volume': a_ticker['quoteVolume'],
+                                'exchange_b_volume': b_ticker['quoteVolume'],
+                                'deviation': volume_diff_pct
+                            })
+                    except Exception as e:
+                        continue
+                
+                result['price_deviations'] = price_deviations
+                result['volume_deviations'] = volume_deviations
             
-    def _get_currency_networks(self, currency_info: Dict) -> List[str]:
+            return result
+            
+        except Exception as e:
+            logging.error(f"比较币种信息时出错: {e}")
+            return {
+                'common_symbols': [],
+                'suspicious_pairs': [],
+                'network_mismatch': [],
+                'error': str(e)
+            }
+
+    @staticmethod
+    def _get_currency_networks(currency_info: Dict) -> List[str]:
         """获取币种支持的网络列表"""
         networks = []
         
@@ -851,7 +965,8 @@ class CryptoUtil:
                 
         return sorted(list(set(networks)))  # 去重并排序
         
-    def _get_contract_addresses(self, currency_info: Dict) -> Dict[str, str]:
+    @staticmethod
+    def _get_contract_addresses(currency_info: Dict) -> Dict[str, str]:
         """获取币种在各个网络上的合约地址"""
         contracts = {}
         
@@ -873,28 +988,29 @@ class CryptoUtil:
                         
         return contracts
         
-    def _is_suspicious_currency(self, currency_a: Dict, currency_b: Dict, 
-                              networks_a: List[str], networks_b: List[str]) -> bool:
+    @staticmethod
+    def _is_suspicious_currency(currency_a: Dict, currency_b: Dict) -> bool:
         """判断是否为可疑的同名不同币"""
         # 检查合约地址
-        contracts_a = self._get_contract_addresses(currency_a)
-        contracts_b = self._get_contract_addresses(currency_b)
+        contracts_a = CryptoUtil._get_contract_addresses(currency_a)
+        contracts_b = CryptoUtil._get_contract_addresses(currency_b)
         
-        # 如果两个交易所都提供了合约地址，但地址不同
-        common_networks = set(contracts_a.keys()) & set(contracts_b.keys())
-        if common_networks:
-            for network in common_networks:
-                if contracts_a[network] != contracts_b[network]:
-                    return True
-                    
-        # 检查币种名称（如果有）
+        # 如果两者都有合约地址但完全不同，则可疑
+        if contracts_a and contracts_b and not set(contracts_a).intersection(set(contracts_b)):
+            return True
+        
+        # 检查名称是否不同
         name_a = currency_a.get('name', '').lower()
         name_b = currency_b.get('name', '').lower()
         if name_a and name_b and name_a != name_b:
             return True
             
         # 检查网络支持差异是否过大
-        if len(set(networks_a) ^ set(networks_b)) > len(set(networks_a) & set(networks_b)):
+        networks_a = CryptoUtil._get_currency_networks(currency_a)
+        networks_b = CryptoUtil._get_currency_networks(currency_b)
+        
+        # 如果两个交易所的网络支持完全不重叠，则可疑
+        if networks_a and networks_b and not set(networks_a).intersection(set(networks_b)):
             return True
             
         return False
@@ -1018,7 +1134,8 @@ class CryptoUtil:
             'risk_score': float(np.mean(volume_ratio))
         }
         
-    def _analyze_network_risk(self, currency_info: Dict, symbol: str) -> Dict:
+    @staticmethod
+    def _analyze_network_risk(currency_info: Dict, symbol: str) -> Dict:
         """分析网络支持风险"""
         base_currency = symbol.split('/')[0]
         
@@ -1029,61 +1146,58 @@ class CryptoUtil:
         )
         
         # 检查网络支持差异
-        network_mismatch = next(
-            (item for item in currency_info['network_mismatch'] 
-             if item['symbol'] == base_currency),
-            None
-        )
+        network_mismatch = [
+            mismatch for mismatch in currency_info['network_mismatch']
+            if mismatch['symbol'] == base_currency
+        ]
         
-        risk_score = 0
-        warning = []
+        # 风险评分
+        risk_score = 0.0
+        warning = ""
         
         if is_suspicious:
-            risk_score += 0.6
-            warning.append("币种在不同交易所可能为不同代币")
-            
+            risk_score += 0.7
+            warning = f"{base_currency}在不同交易所可能代表不同的代币，注意避免混淆"
+        
         if network_mismatch:
-            common_networks = set(network_mismatch['exchange_a_networks']) & \
-                            set(network_mismatch['exchange_b_networks'])
-            if not common_networks:
-                risk_score += 0.4
-                warning.append("交易所间无共同支持的网络")
-            elif len(common_networks) == 1:
-                risk_score += 0.2
-                warning.append("仅有一个共同支持的网络")
-                
+            missing_networks = set(network_mismatch[0]['exchange_a_networks']) ^ set(network_mismatch[0]['exchange_b_networks'])
+            if missing_networks:
+                risk_score += 0.3
+                warning += f" {base_currency}在交易所间支持的网络不同: {', '.join(missing_networks)}"
+        
         return {
+            'is_suspicious': is_suspicious,
+            'network_mismatch': bool(network_mismatch),
             'risk_score': risk_score,
-            'warning': '; '.join(warning) if warning else "网络风险较低"
+            'warning': warning.strip()
         }
         
-    def _calculate_risk_level(self, risk_factors: Dict) -> int:
+    @staticmethod
+    def _calculate_risk_level(risk_factors: Dict) -> int:
         """计算综合风险等级 (1-5)"""
-        # 权重设置
-        weights = {
-            'price_deviation': 0.4,
-            'volume_deviation': 0.3,
-            'network_risk': 0.3
-        }
+        # 获取各风险因子得分
+        price_deviation = risk_factors.get('price_deviation', 0.0)
+        volume_deviation = risk_factors.get('volume_deviation', 0.0)
+        network_risk = risk_factors.get('network_risk', 0.0)
         
-        # 计算加权风险分数
-        risk_score = sum(
-            risk_factors[factor] * weight
-            for factor, weight in weights.items()
-            if factor in risk_factors
+        # 计算加权综合风险分数
+        weighted_score = (
+            0.4 * price_deviation +
+            0.3 * volume_deviation +
+            0.3 * network_risk
         )
         
-        # 映射到1-5的风险等级
-        if risk_score < 0.2:
-            return 1
-        elif risk_score < 0.4:
-            return 2
-        elif risk_score < 0.6:
-            return 3
-        elif risk_score < 0.8:
-            return 4
+        # 映射到1-5风险等级
+        if weighted_score < 0.2:
+            return 1  # 极低风险
+        elif weighted_score < 0.4:
+            return 2  # 低风险
+        elif weighted_score < 0.6:
+            return 3  # 中等风险
+        elif weighted_score < 0.8:
+            return 4  # 高风险
         else:
-            return 5
+            return 5  # 极高风险
         
     @staticmethod
     def analyze_funding_history(exchange: ccxt.Exchange, symbol: str, 
@@ -1467,4 +1581,86 @@ class CryptoUtil:
         
         return order_data    
 
-   
+def test_funding_rate_history():
+    try:
+        # 创建交易所实例
+        exchanges = CryptoUtil.create_exchanges(["binance", "okx"])
+        
+        if "binance" in exchanges and "okx" in exchanges:
+            binance = exchanges["binance"]
+            okx = exchanges["okx"]
+            
+
+            
+            # 示例 1: 获取最新价格
+            btc_price = CryptoUtil.get_last_price(binance, "BTC/USDT")
+
+            # 示例 2: 获取资金费率
+            funding_rate = CryptoUtil.get_funding_rate(okx, "BTC/USDT:USDT")
+        
+            
+            # 示例 3: 获取历史资金费率
+            end_dt = datetime.datetime.now()
+            start_dt = end_dt - datetime.timedelta(days=7)
+            
+            funding_rate_history = CryptoUtil.get_funding_rate_history(
+                okx, 
+                ["BTC/USDT:USDT"], 
+                start_dt=start_dt,
+                end_dt=end_dt,
+                limit=30
+            )
+            
+            if "BTC/USDT:USDT" in funding_rate_history:
+                
+                # 打印最新的5条记录
+                for entry in funding_rate_history["BTC/USDT:USDT"][:5]:
+                    Logger.info(f"时间: {entry['datetime']}, 费率: {entry['fundingRate']}")
+            
+            # 示例 4: 比较两个交易所的币种信息
+            currency_comparison = CryptoUtil.compare_currency_info(
+                binance, 
+                okx, 
+                symbols=["BTC/USDT", "ETH/USDT"],
+                full_comparison=True
+            )
+            
+            Logger.info(f"共同支持的币种: {len(currency_comparison['common_symbols'])}")
+            Logger.info(f"可疑币种配对: {len(currency_comparison['suspicious_pairs'])}")
+            Logger.info(f"网络支持不同: {len(currency_comparison['network_mismatch'])}")
+            
+            if 'price_deviations' in currency_comparison:
+                for dev in currency_comparison['price_deviations']:
+                    Logger.info(f"{dev['symbol']} 价格偏差: {dev['deviation']*100:.2f}%")
+            
+    except Exception as e:
+        Logger.error(f"运行示例时出错: {e}")
+
+
+def test_get_funding_rate_history():
+    try:
+        # 创建交易所实例
+        exchange = CryptoUtil.create_exchanges(["okx"])["okx"]
+
+         # 示例 3: 获取历史资金费率
+        end_dt = datetime.datetime.now()
+        start_dt = end_dt - datetime.timedelta(days=365)  
+        
+        funding_rate_history = CryptoUtil.get_funding_rate_history(
+            exchange, 
+            ["BTC/USDT:USDT"], 
+            start_dt=start_dt,
+            end_dt=end_dt,
+            limit=30
+        )
+        
+        if "BTC/USDT:USDT" in funding_rate_history:
+            for entry in funding_rate_history["BTC/USDT:USDT"]:
+                Logger.info(f"时间: {entry['datetime']}, 费率: {entry['fundingRate']}")
+    
+    except Exception as e:
+        Logger.error(f"运行示例时出错: {e}")
+    
+if __name__ == "__main__":
+    test_get_funding_rate_history()
+    

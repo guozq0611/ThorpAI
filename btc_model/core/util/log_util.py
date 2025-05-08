@@ -77,3 +77,5 @@ class Logger:
 
 
 Logger.config_logger()
+
+logger = Logger()

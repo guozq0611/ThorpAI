@@ -50,7 +50,7 @@ SETTINGS: Dict[str, Any] = {
    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     # 配置okx用的代理，若网络网络无需代理，设置为False
-    "cex.okx.proxy": False,
+    "cex.okx.proxy": True,
     "cex.okx.fees": {
                 'spot': {
                     'maker': 0.0008,
@@ -173,7 +173,43 @@ SETTINGS: Dict[str, Any] = {
     },
     
 
-    
+    # ------------------------------------------------------
+    # 资金费率套利策略参数
+    # ------------------------------------------------------  
+    "strategy.funding_rate_arbitrage": {
+        "common_params": {
+            "min_annualized_funding_rate": 0.15,    # 最小开仓预测年化资金费率 
+            "min_basis_for_open": 0.0,              # 最小开仓实时基差 
+            "max_acceptable_basis": 0.002,          # 最大可接受实时基差 
+            "max_concurrent_positions": 5,          # 最大同时活跃套利头寸数量
+            "min_position_size_usd": 100,           # 最小开仓名义价值 (USD)
+            "funding_rate_close_threshold": 0.05    # 平仓触发的年化资金费率 
+        },
+        "monitor_params": {
+            "data_fetch_interval_sec": 10,          # 数据获取间隔 (秒)
+            "strategy_eval_interval_sec": 10,       # 策略评估间隔 (秒)
+            "risk_check_interval_sec": 5,           # 风险检查间隔 (秒)
+        },
+        "risk_control_params": {
+            "max_loss_limit_absolute_daily": 10,    # 单日最大亏损限制（绝对值）
+            "max_consecutive_loss_times": 10,       # 连续亏损次数
+            "margin_ratio_warning": 0.3,            # 保证金率预警线
+            "margin_ratio_critical": 0.2,           # 保证金率危险线，需采取行动
+            "basis_threshold_stop_loss": -0.005,     # 基差不利变动止损阈值 (例如 -0.5%)
+            "funding_rate_unfavorable_threshold": 0.0, # 资金费率转为负的阈值
+            "position_imbalance_tolerance": 0.05,    # 头寸价值偏差容忍度 (例如 5%)
+            "total_floating_pnl_limit": -0.1,       # 总浮动亏损占总投入资金的比例限制 (例如 -10%)
+        },
+        "execution_params": {
+            "spot_td_mode": "cash",                  # 现货交易模式 (通常是cash)
+            "swap_td_mode": "isolated",              # 永续合约交易模式 (cross 或 isolated)
+            "spot_order_type_open": "market",        # 现货开仓订单类型 (market, limit) 
+            "swap_order_type_open": "market",        # 永续合约开仓订单类型 (market, limit)
+            "spot_order_type_close": "market",       # 现货平仓订单类型
+            "swap_order_type_close": "market",       # 永续合约平仓订单类型
+        }
+    },
+
 
 }
 
@@ -196,17 +232,46 @@ SETTINGS = update_settings(SETTINGS, FileUtil.load_json(local_settings_file_path
 
 
 def get_settings(prefix: str = "") -> Dict[str, Any]:
-    prefix_length = len(prefix)
-    if prefix_length > 0 and not prefix.endswith('.'):
-        prefix = prefix + '.'
-        prefix_length += 1
+    """
+    获取指定前缀的配置
+    支持获取嵌套字典的配置，如'strategy.funding_rate_arbitrage'
+    
+    Args:
+        prefix: 配置前缀，如'strategy.funding_rate_arbitrage'
+    
+    Returns:
+        指定前缀的配置字典
+    """
+    if not prefix:
+        return SETTINGS.copy()
+    
+    # 兼容旧方式的调用 - 对于一级键直接查找
+    if prefix in SETTINGS:
+        return SETTINGS[prefix]
+        
+    # 处理嵌套字典的情况
+    parts = prefix.split('.')
+    current = SETTINGS
+    
+    # 逐级查找字典
+    for part in parts:
+        if part in current and isinstance(current[part], dict):
+            current = current[part]
+        else:
+            # 查找前缀匹配的键值对
+            prefix_length = len(prefix)
+            if prefix_length > 0 and not prefix.endswith('.'):
+                prefix = prefix + '.'
+                prefix_length += 1
+            return {k[prefix_length:]: v for k, v in SETTINGS.items() if k.startswith(prefix)}
+    
+    return current.copy()
 
-    return {k[prefix_length:]: v for k, v in SETTINGS.items() if k.startswith(prefix)}
 
-
-
-proxy_http = get_settings('common')['proxies'].get('http', None)
-proxy_https = get_settings('common')['proxies'].get('https', None)
+# 使用新的get_settings函数获取代理配置
+proxy_settings = get_settings('common')
+proxy_http = proxy_settings.get('proxies', {}).get('http', None) if proxy_settings else None
+proxy_https = proxy_settings.get('proxies', {}).get('https', None) if proxy_settings else None
 
 
 if __name__ == "__main__":

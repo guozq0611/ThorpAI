@@ -14,7 +14,7 @@ from btc_model.core.util.log_util import Logger
 from btc_model.core.util.serialno_util import SerialnoUtil
 from btc_model.core.util.crypto_util import CryptoUtil, ORDERTYPE_2CCXT, DIRECTION_2CCXT, EXCHANGE_FROM_CCXT, POSITION_SIDE_2CCXT
 from btc_model.core.util.crypto_hedge_util import CryptoHedgeUtil
-from btc_model.core.market.market_data_service import MarketDataService
+from btc_model.market.market_data_service import MarketDataService
 from btc_model.trade.position_manager import PositionManager
 from btc_model.trade.arbitrage_order import ArbitrageOrder
 from btc_model.trade.arbitrage_hedge_order import ArbitrageHedgeOrder

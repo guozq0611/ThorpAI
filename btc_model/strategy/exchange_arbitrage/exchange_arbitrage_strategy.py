@@ -17,7 +17,7 @@ from btc_model.core.common.object import PositionData, BlacklistSymbol
 from btc_model.trade.position_holder import PositionHolder
 from btc_model.setting.setting import get_settings
 from btc_model.core.util.crypto_util import CryptoUtil
-from btc_model.core.market.market_data_service import MarketDataService
+from btc_model.market.market_data_service import MarketDataService
 from btc_model.core.common.context import Context
 from btc_model.trade.arbitrage_position_manager import ArbitragePositionManager
 from btc_model.core.util.crypto_util import CryptoUtil

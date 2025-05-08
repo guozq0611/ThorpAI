@@ -153,6 +153,50 @@ CREATE TABLE IF NOT EXISTS account_position (
 
 
 
+-- 存储资金费率套利策略使用的交易对白名单信息
+CREATE TABLE IF NOT EXISTS `funding_rate_arbitrage_whitelist` (
+    `exchange_id` VARCHAR(32) NOT NULL COMMENT '交易所',
+    `base_currency` VARCHAR(10) COMMENT '基础货币 (例如: BTC)',
+    `quote_currency` VARCHAR(10) COMMENT '计价货币 (例如: USDT)',
+    `spot_inst_id` VARCHAR(50) NOT NULL UNIQUE COMMENT '现货交易对ID (例如: BTC-USDT)',
+    `swap_inst_id` VARCHAR(50) NOT NULL UNIQUE COMMENT '永续合约交易对ID (例如: BTC-USDT-SWAP)',
+
+
+    -- 以下字段可以用来存储筛选器生成的分析结果，供人工审核参考
+    `avg_ann_funding_rate_90d` DECIMAL(10, 4) COMMENT '过去90天平均年化资金费率 (%)',
+    `median_ann_funding_rate_90d` DECIMAL(10, 4) COMMENT '过去90天中位数年化资金费率 (%)',
+    `std_dev_ann_funding_rate_90d` DECIMAL(10, 4) COMMENT '过去90天年化资金费率标准差 (%)',
+    `positive_rate_pct_90d` DECIMAL(5, 2) COMMENT '过去90天资金费率为正的百分比 (%)',
+    
+    -- 基差分析相关字段
+    `avg_basis_90d` DECIMAL(10, 4) COMMENT '过去90天合约与现货的平均基差 (%)',
+    `median_basis_90d` DECIMAL(10, 4) COMMENT '过去90天合约与现货的中位数基差 (%)',
+    `std_dev_basis_90d` DECIMAL(10, 4) COMMENT '过去90天基差标准差 (%)',
+    `max_basis_90d` DECIMAL(10, 4) COMMENT '过去90天最大基差 (%)',
+    `min_basis_90d` DECIMAL(10, 4) COMMENT '过去90天最小基差 (%)',
+    `basis_quartile_1_90d` DECIMAL(10, 4) COMMENT '过去90天基差第一四分位数 (%)',
+    `basis_quartile_3_90d` DECIMAL(10, 4) COMMENT '过去90天基差第三四分位数 (%)',
+    `basis_volatility_90d` DECIMAL(10, 4) COMMENT '过去90天基差波动率 (%)',
+    `positive_basis_pct_90d` DECIMAL(5, 2) COMMENT '过去90天基差为正的百分比 (%)',
+    
+    -- 基差与资金费率相关性分析
+    `basis_funding_correlation_90d` DECIMAL(5, 4) COMMENT '过去90天基差与资金费率的相关系数',
+    `avg_basis_to_funding_ratio_90d` DECIMAL(10, 4) COMMENT '过去90天平均基差/资金费率比值',
+    
+    -- 基差策略潜在收益分析
+    `potential_apr_90d` DECIMAL(10, 4) COMMENT '基于过去90天数据计算的潜在年化收益率 (%)',
+    `sharpe_ratio_90d` DECIMAL(10, 4) COMMENT '过去90天基差套利的夏普比率',
+    `max_drawdown_90d` DECIMAL(10, 4) COMMENT '过去90天基差策略的最大回撤 (%)',
+
+    `is_active` BOOLEAN NOT NULL DEFAULT TRUE COMMENT '该交易对是否处于活跃白名单状态 (TRUE: 活跃, FALSE: 暂停)',
+    `comment` TEXT COMMENT '人工审核或系统添加的备注信息',
+
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY (exchange_id, base_currency, quote_currency),
+    INDEX `idx_is_active` (`is_active`)
+) COMMENT='资金费率套利交易对白名单';
+
 
 
 
