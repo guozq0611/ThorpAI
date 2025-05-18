@@ -52,14 +52,7 @@ class FundingRateWhitelistManager:
             query = """
             SELECT 
                 exchange_id, base_currency, quote_currency, 
-                spot_inst_id, swap_inst_id, 
-                avg_ann_funding_rate_90d, median_ann_funding_rate_90d, 
-                std_dev_ann_funding_rate_90d, positive_rate_pct_90d,
-                avg_basis_90d, median_basis_90d, std_dev_basis_90d, 
-                max_basis_90d, min_basis_90d, basis_quartile_1_90d,
-                basis_quartile_3_90d, basis_volatility_90d, positive_basis_pct_90d,
-                basis_funding_correlation_90d, avg_basis_to_funding_ratio_90d,
-                potential_apr_90d, sharpe_ratio_90d, max_drawdown_90d,
+                spot_inst_id, swap_inst_id,
                 is_active, comment, created_at, updated_at
             FROM funding_rate_arbitrage_whitelist
             WHERE is_active = TRUE
@@ -80,28 +73,10 @@ class FundingRateWhitelistManager:
                         'quote_currency': row[2],
                         'spot_inst_id': row[3],
                         'swap_inst_id': row[4],
-                        'avg_ann_funding_rate_90d': row[5],
-                        'median_ann_funding_rate_90d': row[6],
-                        'std_dev_ann_funding_rate_90d': row[7],
-                        'positive_rate_pct_90d': row[8],
-                        'avg_basis_90d': row[9],
-                        'median_basis_90d': row[10],
-                        'std_dev_basis_90d': row[11],
-                        'max_basis_90d': row[12],
-                        'min_basis_90d': row[13],
-                        'basis_quartile_1_90d': row[14],
-                        'basis_quartile_3_90d': row[15],
-                        'basis_volatility_90d': row[16],
-                        'positive_basis_pct_90d': row[17],
-                        'basis_funding_correlation_90d': row[18],
-                        'avg_basis_to_funding_ratio_90d': row[19],
-                        'potential_apr_90d': row[20],
-                        'sharpe_ratio_90d': row[21],
-                        'max_drawdown_90d': row[22],
-                        'is_active': row[23],
-                        'comment': row[24],
-                        'created_at': row[25],
-                        'updated_at': row[26]
+                        'is_active': row[5],
+                        'comment': row[6],
+                        'created_at': row[7],
+                        'updated_at': row[8]
                     }
                     
                     # 生成唯一键，用于快速查找
@@ -161,8 +136,14 @@ class FundingRateWhitelistManager:
         with self._lock:
             return self.whitelist_dict.get(key)
     
-    def add_to_whitelist(self, exchange_id: str, base_currency: str, quote_currency: str, 
-                         spot_inst_id: str, swap_inst_id: str, comment: str = None) -> bool:
+    def add_to_whitelist(self,
+                         exchange_id: str, 
+                         base_currency: str, 
+                         quote_currency: str, 
+                         spot_inst_id: str, 
+                         swap_inst_id: str, 
+                         comment: str = None
+                         ) -> bool:
         """
         添加新的交易对到白名单
         
@@ -179,11 +160,40 @@ class FundingRateWhitelistManager:
         """
         try:
             query = """
-            INSERT INTO funding_rate_arbitrage_whitelist 
-            (exchange_id, base_currency, quote_currency, spot_inst_id, swap_inst_id, comment, is_active)
-            VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+            INSERT INTO funding_rate_arbitrage_whitelist (
+                exchange_id, 
+                base_currency, 
+                quote_currency, 
+                spot_inst_id, 
+                swap_inst_id, 
+                comment, 
+                is_active
+            ) VALUES (
+                :exchange_id, 
+                :base_currency, 
+                :quote_currency, 
+                :spot_inst_id, 
+                :swap_inst_id, 
+                :comment, 
+                :is_active
+            )on duplicate key update 
+                exchange_id = :exchange_id,
+                base_currency = :base_currency,
+                quote_currency = :quote_currency,
+                spot_inst_id = :spot_inst_id,
+                swap_inst_id = :swap_inst_id,
+                comment = :comment,
+                is_active = :is_active
             """
-            params = (exchange_id, base_currency, quote_currency, spot_inst_id, swap_inst_id, comment)
+            params = {
+                'exchange_id': exchange_id,
+                'base_currency': base_currency,
+                'quote_currency': quote_currency,
+                'spot_inst_id': spot_inst_id,
+                'swap_inst_id': swap_inst_id,
+                'comment': comment,
+                'is_active': True
+            }
             
             self.db_wrapper.execute_sql(query, params)
             

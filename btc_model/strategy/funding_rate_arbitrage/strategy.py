@@ -10,6 +10,7 @@ import numpy as np
 import json
 import os
 from collections import defaultdict
+from datetime import datetime
 
 from btc_model.core.util.log_util import Logger
 from btc_model.strategy.exchange_arbitrage.pairs_monitor import PairsMonitor
@@ -21,27 +22,36 @@ from btc_model.market.market_data_service import MarketDataService
 from btc_model.core.common.context import Context
 from btc_model.trade.arbitrage_position_manager import ArbitragePositionManager
 from btc_model.core.util.crypto_util import CryptoUtil
-from btc_model.core.util.db_util import DBUtil
 
+from btc_model.core.wrapper.db_wrapper import DBWrapper
 from btc_model.strategy.exchange_arbitrage.object import ArbitrageSignal
 from btc_model.core.backend.websocket_service import WebSocketService
 from btc_model.manager.instance_manager import set_instance, register_instance
 
 from btc_model.strategy.funding_rate_arbitrage.data_processor import DataProcessor
-from btc_model.strategy.funding_rate_arbitrage.position_manager import PositionManager
-from btc_model.strategy.funding_rate_arbitrage.execution_manager import ExecutionManager
+from btc_model.strategy.funding_rate_arbitrage.exchange_connector import ExchangeConnector
 from btc_model.strategy.funding_rate_arbitrage.risk_manager import RiskManager
 from btc_model.strategy.funding_rate_arbitrage.strategy_params import StrategyParams
+
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_execute_manager import FundingRateArbitrageExecuteManager
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position_manager import FundingRateArbitragePositionManager
+
 
 class FundingRateArbitrageStrategy:
     """
     跨交易所套利策略
     """
     def __init__(self,
+                 exchange_id: str,
+                 symbol_id: str,
+                 spot_inst_id: str,
+                 swap_inst_id: str,
+                 exchange_connector: ExchangeConnector,
                  data_processor: DataProcessor,
-                 position_manager: PositionManager,
-                 execution_manager: ExecutionManager,
+                 position_manager: FundingRateArbitragePositionManager,
+                 execution_manager: FundingRateArbitrageExecuteManager,
                  risk_manager: RiskManager,
+                 market_data_service: MarketDataService,
                  strategy_params: StrategyParams,
                  ):
         """
@@ -55,15 +65,27 @@ class FundingRateArbitrageStrategy:
             config: Dictionary containing strategy parameters.
             context: 上下文       
         """
+        self.exchange_id = exchange_id
+        self.symbol_id = symbol_id
+        self.spot_inst_id = spot_inst_id
+        self.swap_inst_id = swap_inst_id
+
+        self.exchange_connector = exchange_connector
         self.data_processor = data_processor
         self.position_manager = position_manager
-        self.execution_manager = execution_manager
+        self.execution_manager: FundingRateArbitrageExecuteManager = execution_manager
         self.risk_manager = risk_manager
+        self.market_data_service = market_data_service
+
+        self.db_wrapper = DBWrapper().get_instance()
 
         # 从配置文件中获取策略参数
         self.strategy_params = strategy_params
 
         self.is_live = get_settings('trade')['live_mode']
+
+
+
 
       
         self._blacklist_symbols = set()
@@ -99,145 +121,275 @@ class FundingRateArbitrageStrategy:
 
     def check_open_signal(self):
         """
-        Checks if conditions are met to open a new arbitrage position.
+        检查是否有开仓信号，满足条件后、执行交易前才记录信号
         """
-        # Get the latest market metrics
-        latest_metrics = self.data_processor.get_latest_metrics()
-        current_basis = latest_metrics.get('basis')
-        next_annualized_funding_rate = latest_metrics.get('next_annualized_funding_rate')
-        last_data_update_time = latest_metrics.get('last_update_time', 0)
+        # 获取现货和永续合约的价格数据
+        spot_bbo = self.market_data_service.get_bbo(self.exchange_id, self.spot_inst_id)
+        if spot_bbo is None or spot_bbo['timestamp'] == 0:
+            return False
+        
+        swap_bbo = self.market_data_service.get_bbo(self.exchange_id, self.swap_inst_id)
+        if swap_bbo is None or swap_bbo['timestamp'] == 0:
+            return False
+        
+        
+        # 获取当前资金费率
+        current_funding_rate = self.market_data_service.get_funding_rate(self.exchange_id, self.swap_inst_id)
+        if current_funding_rate is None or current_funding_rate['timestamp'] == 0:
+            Logger.warning(f"无法获取资金费率，跳过开仓检查")
+            return False
+        
+        current_funding_rate = current_funding_rate['fundingRate']
+        
+        # 计算年化资金费率（假设每8小时一次，一年365天）
+        funding_periods_per_year = 365 * 3  # 每天3次，一年365天
+        annualized_funding_rate = current_funding_rate * funding_periods_per_year * 100  # 转换为百分比
+        
+        # 计算基差
+        spot_ask = spot_bbo['ask_price']
+        swap_bid = swap_bbo['bid_price']
+        basis = swap_bid - spot_ask
+        basis_ratio = (basis / spot_ask) * 100  # 转换为百分比
+        
+        # 根据策略条件判断是否开仓
+        if annualized_funding_rate > self.strategy_params.common_params.min_annualized_funding_rate and \
+            basis_ratio < self.strategy_params.common_params.max_acceptable_basis:
+            # 进行额外检查
+            
+            # 检查交易对是否在黑名单中
+            if self.spot_inst_id in self._blacklist_symbols or self.swap_inst_id in self._blacklist_symbols:
+                Logger.info(f"交易对 {self.spot_inst_id}/{self.swap_inst_id} 在黑名单中，不开仓")
+                return False
+            
+            # 检查是否已有该交易对的头寸
+            existing_position = self.position_manager.get_position_by_symbols(self.spot_inst_id, self.swap_inst_id)
+            if existing_position:
+                Logger.info(f"已存在交易对 {self.spot_inst_id}/{self.swap_inst_id} 的头寸，不重复开仓")
+                return False
+            
+            # 计算头寸大小
+            available_capital = self.get_available_capital()
+            position_size = self.calculate_position_size(available_capital, spot_ask)
+            
+            if position_size <= 0:
+                Logger.info("计算的头寸大小为零或负数，不开仓")
+                return False
+            
+            active_position_count = self.position_manager.get_active_position_by_symbol_id(symbol_id=self.symbol_id)
+            if active_position_count >= self.strategy_params.common_params.max_open_positions:
+                Logger.info(f"当前交易对 {self.symbol_id} 已有 {active_position_count} 个活跃持仓，不开仓")
+                return False
+                
+            # 满足开仓条件，准备信号数据
+            exchange_id = self.exchange_id
+            pair_parts = self.spot_inst_id.split('/')
+            base_currency = pair_parts[0]
+            quote_currency = pair_parts[1]
+            
+            now = datetime.now()
+           
+            sql = """
+            INSERT INTO funding_rate_arbitrage_signal (
+                signal_date, 
+                signal_time, 
+                exchange_id, 
+                base_currency, 
+                quote_currency, 
+                spot_inst_id, 
+                swap_inst_id, 
+                current_funding_rate, 
+                annualized_funding_rate, 
+                spot_bid, 
+                spot_bid_volume, 
+                spot_ask, 
+                spot_ask_volume, 
+                swap_bid, 
+                swap_bid_volume, 
+                swap_ask, 
+                swap_ask_volume, 
+                basis, 
+                basis_ratio, 
+                status, 
+                remark
+                )VALUES (
+                :signal_date, 
+                :signal_time, 
+                :exchange_id, 
+                :base_currency, 
+                :quote_currency, 
+                :spot_inst_id, 
+                :swap_inst_id, 
+                :current_funding_rate, 
+                :annualized_funding_rate, 
+                :spot_bid, 
+                :spot_bid_volume, 
+                :spot_ask, 
+                :spot_ask_volume, 
+                :swap_bid, 
+                :swap_bid_volume, 
+                :swap_ask, 
+                :swap_ask_volume, 
+                :basis, 
+                :basis_ratio, 
+                :status, 
+                :remark
+                )
+            """
+            
+            params = {
+                'signal_date': now.date(),
+                'signal_time': now.time(),
+                'exchange_id': exchange_id,
+                'base_currency': base_currency,
+                'quote_currency': quote_currency,
+                'spot_inst_id': self.spot_inst_id,
+                'swap_inst_id': self.swap_inst_id,
+                'current_funding_rate': current_funding_rate,
+                'annualized_funding_rate': annualized_funding_rate,
+                'spot_bid': spot_bbo['bid_price'],
+                'spot_bid_volume': spot_bbo['bid_volume'],
+                'spot_ask': spot_bbo['ask_price'],
+                'spot_ask_volume': spot_bbo['ask_volume'],
+                'swap_bid': swap_bbo['bid_price'],
+                'swap_bid_volume': swap_bbo['bid_volume'],
+                'swap_ask': swap_bbo['ask_price'],
+                'swap_ask_volume': swap_bbo['ask_volume'],
+                'basis': basis,
+                'basis_ratio': basis_ratio,
+                'status': 'triggered',
+                'remark': '开仓信号已触发交易'
+            }
 
-        # Get current position information
-        active_positions = self.position_manager.get_all_positions()
-
-        # Check basic data availability and freshness
-        if current_basis is None:
-            Logger.debug("Open signal check skipped: current_basis not available.")
-            return
-
-        # if time.time() - last_data_update_time > self.data_staleness_threshold_sec:
-        #      Logger.warning(f"Open signal check skipped: Market data is stale (last updated {time.time() - last_data_update_time:.2f}s ago).")
-        #      self.risk_manager.trigger_alert("Data Stale Warning", f"Market data for strategy is stale ({time.time() - last_data_update_time:.2f}s old).", level='warning')
-        #      return
-
-        # 1. Check if funding rate meets requirement
-        # if next_annualized_funding_rate < self.min_annualized_funding_rate:
-        #     Logger.debug(f"Open signal check skipped: Next funding rate ({next_annualized_funding_rate:.2f}%) below minimum requirement ({self.min_annualized_funding_rate:.2f}%).")
-        #     return
-
-        # 2. Check if basis is within acceptable range
-        if current_basis < self.strategy_params.common_params.min_basis_for_open or \
-           current_basis > self.strategy_params.common_params.max_acceptable_basis:
-             Logger.debug(f"Open signal check skipped: Basis ({current_basis:.8f}) outside acceptable range ({self.strategy_params.common_params.min_basis_for_open} to {self.strategy_params.common_params.max_acceptable_basis}).")
-             return
-
-        # 3. Check if maximum concurrent positions reached
-        if len(active_positions) >= self.strategy_params.common_params.max_concurrent_positions:
-            Logger.debug(f"Open signal check skipped: Max concurrent positions ({self.strategy_params.common_params.max_concurrent_positions}) reached (currently {len(active_positions)}).")
-            return
-
-        # 4. Check if an active position already exists for this trading pair
-        # Requires PositionManager to have a method to check this
-        # if self.pos_manager.has_active_position_for_pair(self.data_proc.spot_inst_id):
-        #      Logger.debug(f"Open signal check skipped: Active position already exists for {self.data_proc.spot_inst_id}.")
-        #      return
-
-        # 5. Check if there is enough available capital
-        # Requires RiskManager or another module to provide available capital information
-        # available_capital = self.risk_manager.get_available_capital() # Example
-        # if available_capital is None or available_capital < self.min_position_size_usd:
-        #      Logger.warning(f"Open signal check skipped: Insufficient capital ({available_capital}) for minimum size ({self.min_position_size_usd} USD).")
-        #      self.risk_manager.trigger_alert("Insufficient Capital", f"Available capital ({available_capital}) below min position size ({self.min_position_size_usd} USD).", level='warning')
-        #      return
-
-        # 6. Check overall risk status (e.g., if overall margin is healthy)
-        # if not self.risk_manager.is_overall_margin_healthy():
-        #      Logger.warning("Open signal check skipped: Overall risk status is not healthy.")
-        #      return
-
-        # If all conditions are met, trigger the open signal
-        # Logger.info(f"Open signal triggered for {self.data_proc.spot_inst_id}! Next Funding: {next_annualized_funding_rate:.2f}%, Basis: {current_basis:.8f}.")
-        Logger.info(f"Open signal triggered for {self.data_proc.spot_inst_id}, Basis: {current_basis:.8f}.")
-
-        # Calculate position size (based on available capital, min size, etc.)
-        # This calculation needs to be precise, considering leverage, contract multiplier, etc.
-        # It might require more info from DataProcessor or a separate calculation utility
-        # Example calculation placeholder:
-        # position_size_coin = self.calculate_position_size(available_capital, self.data_proc.get_latest_spot_price()) # TODO: Implement size calculation
-
-        # if position_size_coin > 0:
-        #     # Create a new position object (status 'OPENING') and generate a unique position_id
-        #     new_position = self.pos_manager.create_new_position(self.data_proc.spot_inst_id)
-        #
-        #     # Generate the open instruction
-        #     open_instruction = {
-        #         'position_id': new_position['position_id'], # Use the ID from the created position
-        #         'inst_id': self.data_proc.spot_inst_id, # Trading pair ID
-        #         'size_coin': position_size_coin, # Size in base currency (e.g., BTC)
-        #         # TODO: Add more instruction details, like order type (market/limit), price for limit orders etc.
-        #     }
-        #     Logger.info(f"Sending open instruction for position {new_position['position_id']}")
-        #     self.exec_manager.handle_open_instruction(open_instruction) # Notify ExecutionManager to execute
-        # else:
-        #      Logger.warning("Calculated position size is zero. Open instruction not sent.")
-
-        # For simulation purposes, let's just log the signal
-        Logger.info("Simulating sending open instruction (actual execution commented out).")
-
+            # 写入信号到数据库
+            signal_id = self.db_wrapper.execute_sql(sql, params)
+            if signal_id is None:
+                Logger.warning(f"记录开仓信号失败，跳过开仓")
+                return False
+            
+            symbol_id = f"{self.spot_inst_id}/{self.swap_inst_id}"
+            # self.trigger_open_position(signal_id, params)
+            self.execution_manager.create_arbitrage_position(
+                symbol_id, 
+                position_size
+                )
+            
+            Logger.info(f"记录开仓信号 ID: {signal_id}, 交易对: {self.spot_inst_id}/{self.swap_inst_id}")
+            
+            # 执行交易逻辑
+            #self.execute_open_position(self.spot_inst_id, self.swap_inst_id, spot_ask, swap_bid, position_size)
+            return True
+        
+        return False
+    
+    def trigger_open_position(self, signal_id: int, signal_data: dict):
+        """
+        触发开仓交易
+        """
+        self.execution_manager.trigger_open_position(signal_id, signal_data)
 
     def check_close_signal(self):
-        """
-        Checks if conditions are met to close existing arbitrage positions.
-        """
-        active_positions = self.pos_manager.get_all_positions()
+        """检查是否有平仓信号，满足条件后、执行交易前才记录信号"""
+        # 获取现货和永续合约的价格数据
+        spot_bbo = self.market_data_service.get_bbo(self.exchange_id, self.spot_inst_id)
+        if spot_bbo is None or spot_bbo['timestamp'] == 0:  
+            return False
+        
+        swap_bbo = self.market_data_service.get_bbo(self.exchange_id, self.swap_inst_id)
+        if swap_bbo is None or swap_bbo['timestamp'] == 0:
+            return False
+        
+        # 获取当前资金费率
+        current_funding_rate = self.market_data_service.get_funding_rate(self.exchange_id, self.swap_inst_id)
+        if current_funding_rate is None or current_funding_rate['timestamp'] == 0:
+            Logger.warning(f"无法获取资金费率，跳过平仓检查")
+            return False
+        
+        current_funding_rate = current_funding_rate['fundingRate']
+        
+        # 计算年化资金费率
+        funding_periods_per_year = 365 * 3
+        annualized_funding_rate = current_funding_rate * funding_periods_per_year * 100
+        
+        # 计算基差
+        spot_bid = spot_bbo['bid_price']
+        swap_ask = swap_bbo['ask_price']
+        basis = swap_ask - spot_bid
+        basis_ratio = (basis / spot_bid) * 100
+        
+        position = self.position_manager.get_position_by_symbols(self.spot_inst_id, self.swap_inst_id)
 
-        if not active_positions:
-            Logger.debug("Close signal check skipped: No active positions.")
-            return
-
-        latest_metrics = self.data_proc.get_latest_metrics()
-        current_annualized_funding_rate = latest_metrics.get('annualized_funding_rate')
-        last_data_update_time = latest_metrics.get('last_update_time', 0)
-
-        # Ensure funding rate data is fresh
-        if time.time() - last_data_update_time > self.data_staleness_threshold_sec:
-             Logger.warning(f"Close signal check skipped: Funding rate data is stale ({time.time() - last_data_update_time:.2f}s old).")
-             # RiskManager should already be alerting on stale data, but can add here too
-             return
-
-        # Iterate through all active positions to check for closing conditions
-        for position in active_positions:
-             # Only check positions that are fully opened
-             if position.get('status') != 'OPENED':
-                  Logger.debug(f"Skipping close check for position {position.get('position_id')}: Status is {position.get('status')}.")
-                  continue
-
-             position_id = position.get('position_id')
-
-             # 1. Check if current funding rate is below the close threshold (Core close condition)
-             # We use the 'current' funding rate here, not 'next predicted', as we care about current earnings
-             if current_annualized_funding_rate is not None and current_annualized_funding_rate < self.funding_rate_close_threshold:
-                  Logger.info(f"Close signal triggered for position {position_id}: Current funding rate ({current_annualized_funding_rate:.2f}%) below threshold ({self.funding_rate_close_threshold:.2f}%).")
-                  self._trigger_close(position_id, reason="funding_rate_low") # Trigger close
-
-             # 2. Check if profit target is reached (Optional condition)
-             # Requires PositionManager to calculate current total PnL
-             # current_total_pnl = self.pos_manager.calculate_total_pnl(position_id) # Example
-             # profit_target_reached = False # TODO: Implement logic based on config
-             # if profit_target_reached:
-             #      Logger.info(f"Close signal triggered for position {position_id}: Profit target reached.")
-             #      self._trigger_close(position_id, reason="profit_target")
-
-             # 3. Check if maximum holding time is reached (Optional condition)
-             # Requires PositionManager to store open time
-             # max_hold_time_reached = False # TODO: Implement logic based on config and position['open_time']
-             # if max_hold_time_reached:
-             #      Logger.info(f"Close signal triggered for position {position_id}: Max hold time reached.")
-             #      self._trigger_close(position_id, reason="max_hold_time")
-
-             # TODO: Add other potential close conditions, e.g.:
-             # - Approaching a major funding settlement time window (if you want to avoid potentially paying negative rates)
-             # - Extreme market volatility or upcoming significant events
+        if position is None:
+            Logger.warning(f"无法获取头寸信息，跳过平仓检查")
+            return False
+        
+        # # 计算持仓时间
+        # position_duration = (datetime.now() - position.entry_time).total_seconds() / 3600  # 持仓时间(小时)
+        
+        # 根据策略条件判断是否平仓
+        if annualized_funding_rate < self.strategy_params.common_params.min_annualized_funding_rate or \
+            basis_ratio > self.strategy_params.common_params.max_acceptable_basis:
+            
+            # 检查是否可以平仓
+            if not self.position_manager.can_close_position(position.position_id):
+                Logger.info(f"头寸 {position.position_id} 当前不可平仓")
+                return False
+                
+            # 检查是否有足够的流动性进行平仓
+            if spot_bid <= 0 or swap_ask <= 0:
+                Logger.warning(f"价格异常，不能平仓：spot_bid={spot_bid}, swap_ask={swap_ask}")
+                return False
+            
+            # 满足平仓条件，准备信号数据
+            exchange_id = self.exchange_id
+            pair_parts = self.spot_inst_id.split('/')
+            base_currency = pair_parts[0]
+            quote_currency = pair_parts[1]
+            
+            close_reason = []
+            # if position_duration >= self.strategy_params.common_params.min_hold_hours:
+            #     close_reason.append(f"持仓时间已达到最小持仓时间")
+            if annualized_funding_rate < self.strategy_params.common_params.min_annualized_funding_rate:
+                close_reason.append(f"资金费率低于平仓阈值")
+            if basis_ratio > self.strategy_params.common_params.max_acceptable_basis:
+                close_reason.append(f"基差比例高于平仓阈值")
+            
+            close_reason_str = ", ".join(close_reason)
+            
+            now = datetime.now()
+            signal_data = {
+                'signal_date': now.date(),
+                'signal_time': now.time(),
+                'exchange_id': exchange_id,
+                'base_currency': base_currency,
+                'quote_currency': quote_currency,
+                'spot_inst_id': self.spot_inst_id,
+                'swap_inst_id': self.swap_inst_id,
+                'current_funding_rate': current_funding_rate,
+                'annualized_funding_rate': annualized_funding_rate,
+                'spot_bid': spot_bid,
+                'spot_bid_volume': spot_bbo['bid_volume'],
+                'spot_ask': spot_bbo['ask_price'],
+                'spot_ask_volume': spot_bbo['ask_volume'],
+                'swap_bid': swap_bbo['bid_price'],
+                'swap_bid_volume': swap_bbo['bid_volume'],
+                'swap_ask': swap_bbo['ask_price'],
+                'swap_ask_volume': swap_bbo['ask_volume'],
+                'basis': basis,
+                'basis_ratio': basis_ratio,
+                'status': 'triggered',
+                'remark': f'平仓信号已触发, 持仓时间: {position_duration:.2f}小时, 原因: {close_reason_str}'
+            }
+            
+            # 写入信号到数据库
+            #signal_id = self.db_connector.insert_record('funding_rate_arbitrage_signal', signal_data)
+            
+            #Logger.info(f"记录平仓信号 ID: {signal_id}, 交易对: {self.spot_inst_id}/{self.swap_inst_id}, 原因: {close_reason_str}")
+            
+            # 执行平仓逻辑
+            #self.execute_close_position(self.spot_inst_id, self.swap_inst_id, spot_bid, swap_ask)
+            return True
+        
+        return False
 
     # This method can be called directly by RiskManager to force a close
     def trigger_close_by_risk_manager(self, position_id: str, reason: str):
@@ -257,7 +409,7 @@ class FundingRateArbitrageStrategy:
         Internal method: Generates a close instruction and sends it to ExecutionManager.
         Ensures that close instructions are not sent repeatedly for a position already closing.
         """
-        position = self.pos_manager.get_position(position_id)
+        position = self.position_manager.get_position(position_id)
         if position is None:
              Logger.warning(f"Attempted to trigger close for non-existent position: {position_id}")
              return
@@ -281,7 +433,7 @@ class FundingRateArbitrageStrategy:
             'inst_id': position.get('inst_id'), # Trading pair ID from the position object
             # TODO: Add more instruction details, like order type (market/limit)
         }
-        self.exec_manager.handle_close_instruction(close_instruction) # Notify ExecutionManager to execute
+        self.execution_manager.handle_close_instruction(close_instruction) # Notify ExecutionManager to execute
 
     def get_available_capital(self) -> float:
         """
@@ -301,7 +453,7 @@ class FundingRateArbitrageStrategy:
             available_equity = account_info.get('available_equity', 0)
             
             # 考虑风险管理，通常只使用账户资金的一部分
-            risk_ratio = self.config.get('risk_control_params', {}).get('capital_usage_ratio', 0.5)
+            risk_ratio = self.strategy_params.risk_control_params.margin_ratio_warning
             available_capital = available_equity * risk_ratio
             
             # 记录可用资金
@@ -312,7 +464,7 @@ class FundingRateArbitrageStrategy:
         except Exception as e:
             Logger.error(f"获取可用资金时出错: {e}")
             # 返回默认值
-            return self.config.get('common_params', {}).get('default_available_capital', 1000.0)
+            return self.strategy_params.common_params.min_position_size_usd
 
     def calculate_position_size(self, available_capital: float, current_price: float) -> float:
         """
@@ -327,12 +479,12 @@ class FundingRateArbitrageStrategy:
         """
         try:
             # 获取配置参数
-            min_position_size_usd = self.config.get('common_params', {}).get('min_position_size_usd', 100.0)
-            max_position_size_usd = self.config.get('risk_control_params', {}).get('max_single_position_size_usd', 1000.0)
-            max_concurrent_positions = self.config.get('common_params', {}).get('max_concurrent_positions', 5)
+            min_position_size_usd = self.strategy_params.common_params.min_position_size_usd
+            max_position_size_usd = self.strategy_params.common_params.max_position_size_usd
+            max_concurrent_positions = self.strategy_params.common_params.max_concurrent_positions
             
             # 当前活跃头寸数量
-            active_positions_count = self.pos_manager.get_active_positions_count()
+            active_positions_count = self.position_manager.get_active_positions_count()
             
             # 如果已达到最大头寸数量，则不开新仓
             if active_positions_count >= max_concurrent_positions:
@@ -425,13 +577,13 @@ class FundingRateArbitrageStrategy:
                 return
                 
             # 检查是否已有该交易对的头寸
-            existing_position = self.pos_manager.get_position_by_symbols(spot_symbol, swap_symbol)
+            existing_position = self.position_manager.get_position_by_symbols(spot_symbol, swap_symbol)
             if existing_position:
                 Logger.info(f"已存在交易对 {spot_symbol}/{swap_symbol} 的头寸，不重复开仓")
                 return
                 
             # 创建新头寸
-            new_position = self.pos_manager.create_funding_rate_position(
+            new_position = self.position_manager.create_funding_rate_position(
                 exchange_id=exchange_id,
                 spot_symbol=spot_symbol,
                 swap_symbol=swap_symbol,
@@ -456,7 +608,7 @@ class FundingRateArbitrageStrategy:
                 
                 # 发送给执行管理器
                 Logger.info(f"发送开仓指令: {new_position.position_id}")
-                self.exec_manager.handle_open_instruction(open_instruction)
+                self.execution_manager.handle_open_instruction(open_instruction)
                 
                 # 广播信号
                 self.whitelist_manager.broadcast_funding_rate_signal(
@@ -478,8 +630,8 @@ class FundingRateArbitrageStrategy:
 
 def run():
     from exchange_connector import ExchangeConnector
-    from position_manager import PositionManager
-    from execution_manager import ExecutionManager
+    from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position_manager import PositionManager
+    from btc_model.strategy.funding_rate_arbitrage.execution_manager______ import ExecutionManager
     from risk_manager import RiskManager
     from data_processor import DataProcessor
     import threading

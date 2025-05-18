@@ -47,7 +47,8 @@ class DBWrapper:
         
     def execute_sql(self, sql: str, params: dict = None):
         with self.db_engine.connect() as conn:
-            conn.execute(text(sql), params)
+            cursor = conn.execute(text(sql), params)
             conn.commit()
+            return cursor.lastrowid
 
   

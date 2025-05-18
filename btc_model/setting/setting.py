@@ -178,11 +178,13 @@ SETTINGS: Dict[str, Any] = {
     # ------------------------------------------------------  
     "strategy.funding_rate_arbitrage": {
         "common_params": {
+            "total_capital_limit_usd": 100,         # 策略总资金限制(USD/USDT)
             "min_annualized_funding_rate": 0.15,    # 最小开仓预测年化资金费率 
             "min_basis_for_open": 0.0,              # 最小开仓实时基差 
             "max_acceptable_basis": 0.002,          # 最大可接受实时基差 
             "max_concurrent_positions": 5,          # 最大同时活跃套利头寸数量
-            "min_position_size_usd": 100,           # 最小开仓名义价值 (USD)
+            "min_position_size_usd": 100,           # 最小开仓名义价值 (USD/USDT)
+            "max_position_size_usd": 1000,          # 最大开仓名义价值 (USD/USDT)
             "funding_rate_close_threshold": 0.05    # 平仓触发的年化资金费率 
         },
         "monitor_params": {

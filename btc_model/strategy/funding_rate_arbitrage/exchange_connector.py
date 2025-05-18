@@ -197,14 +197,22 @@ class ExchangeConnector:
                         account_funds = self.exchange.privateGetAccountBalance(params)
                         if 'data' in account_funds and len(account_funds['data']) > 0:
                             funds_data = account_funds['data'][0]
-                            account_info['total_equity'] = float(funds_data.get('totalEq', 0))
-                            account_info['available_equity'] = float(funds_data.get('availEq', 0))
+                            account_info['total_equity'] = float(funds_data.get('totalEq') or 0)
+                            account_info['available_equity'] = float(funds_data.get('availEq') or 0)
                             
                             # 统计所有币种的未实现盈亏总和
-                            total_unrealized_pl = 0
+                            
+                            total_available_equity = 0  # 可用保证金
+                            total_available_balance = 0  # 可用余额
+                            total_unrealized_pl = 0  # 未实现盈亏
                             for detail in funds_data.get('details', []):
-                                total_unrealized_pl += float(detail.get('upl', 0))
+                                total_available_equity += float(detail.get('availEq') or 0)
+                                total_available_balance += float(detail.get('availBal') or 0)
+                                total_unrealized_pl += float(detail.get('upl') or 0)
+                                
                             account_info['unrealized_pnl'] = total_unrealized_pl
+                            account_info['available_equity'] = total_available_equity
+                            account_info['available_balance'] = total_available_balance
                     except Exception as e:
                         logger.warning(f"获取OKX账户资金信息失败: {e}")
                     
@@ -237,6 +245,10 @@ class ExchangeConnector:
                             else:
                                 account_info['margin_ratio'] = 999.0
                                 account_info['risk_level'] = 'safe'
+                        else:
+                            account_info['margin_ratio'] = 999.0
+                            account_info['risk_level'] = 'safe'
+
                     except Exception as e:
                         logger.warning(f"获取OKX持仓信息失败: {e}")
                         

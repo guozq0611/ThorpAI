@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS arbitrage_position (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (trade_date, index_code)
-) COMMENT='指数日线行情表';
+) COMMENT='套利持仓表';
 
 
 -- 黑名单交易对
@@ -162,6 +162,23 @@ CREATE TABLE IF NOT EXISTS `funding_rate_arbitrage_whitelist` (
     `swap_inst_id` VARCHAR(50) NOT NULL UNIQUE COMMENT '永续合约交易对ID (例如: BTC-USDT-SWAP)',
 
 
+    `is_active` BOOLEAN NOT NULL DEFAULT TRUE COMMENT '该交易对是否处于活跃白名单状态 (TRUE: 活跃, FALSE: 暂停)',
+    `comment` TEXT COMMENT '人工审核或系统添加的备注信息',
+
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY (exchange_id, base_currency, quote_currency),
+    INDEX `idx_is_active` (`is_active`)
+) COMMENT='资金费率套利交易对白名单';
+
+
+
+-- 存储资金费率分析指标
+CREATE TABLE IF NOT EXISTS `funding_rate_basis_summary` (
+    `exchange_id` VARCHAR(32) NOT NULL COMMENT '交易所',
+    `base_currency` VARCHAR(10) COMMENT '基础货币 (例如: BTC)',
+    `quote_currency` VARCHAR(10) COMMENT '计价货币 (例如: USDT)',
+
     -- 以下字段可以用来存储筛选器生成的分析结果，供人工审核参考
     `avg_ann_funding_rate_90d` DECIMAL(10, 4) COMMENT '过去90天平均年化资金费率 (%)',
     `median_ann_funding_rate_90d` DECIMAL(10, 4) COMMENT '过去90天中位数年化资金费率 (%)',
@@ -188,16 +205,78 @@ CREATE TABLE IF NOT EXISTS `funding_rate_arbitrage_whitelist` (
     `sharpe_ratio_90d` DECIMAL(10, 4) COMMENT '过去90天基差套利的夏普比率',
     `max_drawdown_90d` DECIMAL(10, 4) COMMENT '过去90天基差策略的最大回撤 (%)',
 
-    `is_active` BOOLEAN NOT NULL DEFAULT TRUE COMMENT '该交易对是否处于活跃白名单状态 (TRUE: 活跃, FALSE: 暂停)',
-    `comment` TEXT COMMENT '人工审核或系统添加的备注信息',
-
     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY (exchange_id, base_currency, quote_currency),
-    INDEX `idx_is_active` (`is_active`)
-) COMMENT='资金费率套利交易对白名单';
+    UNIQUE KEY (exchange_id, base_currency, quote_currency)
+) COMMENT='资金费率分析指标表';
+
+
+-- 资金费率套利持仓
+CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_positions (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    account_id VARCHAR(32) NOT NULL COMMENT '账户ID',
+    exchange_id VARCHAR(32) NOT NULL COMMENT '交易所ID',
+    base_currency VARCHAR(10) NOt NULL COMMENT '基础货币',
+    quote_currency VARCHAR(10) NOt NULL COMMENT '计价货币',
+    spot_inst_id VARCHAR(50) NOT NULL COMMENT '现货交易对ID',
+    swap_inst_id VARCHAR(50) NOT NULL COMMENT '永续合约交易对ID',
+    -- 现货持仓信息
+    spot_position DECIMAL(18, 4) NOT NULL COMMENT '现货持仓数量',
+    spot_frozen DECIMAL(18, 4) NOT NULL COMMENT '现货冻结数量',
+    -- 永续合约持仓信息
+    swap_position DECIMAL(18, 4) NOT NULL COMMENT '永续合约持仓数量',
+    swap_frozen DECIMAL(18, 4) NOT NULL COMMENT '永续合约冻结数量',
+    -- 持仓状态
+    status VARCHAR(32) NOT NULL DEFAULT 'holding' COMMENT '持仓状态（holding: 持有中, closing: 平仓中, closed: 已平仓）',
+    -- 时间戳
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    -- 唯一索引（账户+现货+永续交易对）
+    UNIQUE KEY (account_id, exchange_id, base_currency, quote_currency)
+) COMMENT='资金费率套利持仓表';
 
 
 
+-- 资金费率套利信号
+CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_signal (
+    id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    signal_date DATE NOT NULL COMMENT '信号日期',
+    signal_time TIME NOT NULL COMMENT '信号时间',
+    exchange_id VARCHAR(32) NOT NULL COMMENT '交易所ID（关联白名单）',
+    base_currency VARCHAR(10) NOT NULL COMMENT '基础货币（如BTC）',
+    quote_currency VARCHAR(10) NOT NULL COMMENT '计价货币（如USDT）',
+
+    spot_inst_id VARCHAR(50) NOT NULL COMMENT '现货交易对ID（关联白名单）',
+    swap_inst_id VARCHAR(50) NOT NULL COMMENT '永续合约交易对ID（关联白名单）',
+    
+    -- 资金费率核心指标
+    current_funding_rate DECIMAL(10, 6) NOT NULL COMMENT '当前资金费率（原始值，如0.0001表示0.01%）',
+    annualized_funding_rate DECIMAL(10, 4) NOT NULL COMMENT '年化资金费率（%，如5.00表示5%）',
+    
+    -- 现货与永续价格数据
+    spot_bid DECIMAL(18, 4) NOT NULL COMMENT '现货买一价',
+    spot_bid_volume DECIMAL(18, 4) NOT NULL COMMENT '现货买一量',
+    spot_ask DECIMAL(18, 4) NOT NULL COMMENT '现货卖一价',
+    spot_ask_volume DECIMAL(18, 4) NOT NULL COMMENT '现货卖一量',
+    swap_bid DECIMAL(18, 4) NOT NULL COMMENT '永续买一价',
+    swap_bid_volume DECIMAL(18, 4) NOT NULL COMMENT '永续买一量',
+    swap_ask DECIMAL(18, 4) NOT NULL COMMENT '永续卖一价',
+    swap_ask_volume DECIMAL(18, 4) NOT NULL COMMENT '永续卖一量',
+    
+    -- 基差计算结果
+    basis DECIMAL(10, 4) NOT NULL COMMENT '基差（永续-现货价格，绝对值）',
+    basis_ratio DECIMAL(10, 4) NOT NULL COMMENT '基差比例（%，(永续价格-现货价格)/现货价格*100）',
+    
+    -- 信号状态与备注
+    status VARCHAR(32) NOT NULL DEFAULT 'generated' COMMENT '信号状态（generated: 已生成, triggered: 已触发交易, expired: 已失效）',
+    remark VARCHAR(256) NULL COMMENT '备注（如异常说明、触发条件等）',
+    
+    -- 时间戳
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+    
+    -- 唯一索引（同一时间同一交易对仅一条信号）
+    UNIQUE KEY (signal_date, signal_time, exchange_id, base_currency, quote_currency)
+) COMMENT='资金费率套利信号表';
 
 

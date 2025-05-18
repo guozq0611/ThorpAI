@@ -1,7 +1,7 @@
 import time
 from typing import Dict, Any
 from btc_model.core.util.log_util import Logger
-from btc_model.strategy.funding_rate_arbitrage.position_manager import PositionManager
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position_manager import PositionManager
 from btc_model.strategy.funding_rate_arbitrage.exchange_connector import ExchangeConnector
 from btc_model.strategy.funding_rate_arbitrage.strategy_params import StrategyParams
 

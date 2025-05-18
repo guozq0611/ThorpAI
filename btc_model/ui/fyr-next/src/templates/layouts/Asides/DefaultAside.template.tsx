@@ -197,6 +197,14 @@ const DefaultAsideTemplate = () => {
 							<NavItem {...appPages.strategyAppPages.subPages.crossExchangeArbitrage.subPages.positions} />
 						</NavCollapse>
 						<NavCollapse
+							text={appPages.strategyAppPages.subPages.fundingRateArbitrage.text}
+							to={appPages.strategyAppPages.subPages.fundingRateArbitrage.to}
+							icon={appPages.strategyAppPages.subPages.fundingRateArbitrage.icon}>
+							<NavItem {...appPages.strategyAppPages.subPages.fundingRateArbitrage.subPages.arbitrageList} />
+							<NavItem {...appPages.strategyAppPages.subPages.fundingRateArbitrage.subPages.whitelist} />
+							<NavItem {...appPages.strategyAppPages.subPages.fundingRateArbitrage.subPages.signals} />
+						</NavCollapse>
+						<NavCollapse
 							text={appPages.strategyAppPages.subPages.triangularArbitrage.text}
 							to={appPages.strategyAppPages.subPages.triangularArbitrage.to}
 							icon={appPages.strategyAppPages.subPages.triangularArbitrage.icon}>

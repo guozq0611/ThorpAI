@@ -3,17 +3,18 @@ import time
 
 from exchange_connector import ExchangeConnector # 假设你已经实现了这个类
 from data_processor import DataProcessor     # 假设你已经实现了这个类
-from position_manager import PositionManager # 假设你已经实现了这个类
-from execution_manager import ExecutionManager # 假设你已经实现了这个类
 from strategy_params import RiskControlParams
 # from alert_service import AlertService     # 假设你有一个发送告警的模块
+
+from trade.funding_rate_arbitrage_position_manager import FundingRateArbitragePositionManager # 假设你已经实现了这个类
+from trade.funding_rate_arbitrage_execute_manager import FundingRateArbitrageExecuteManager # 假设你已经实现了这个类
 
 class RiskManager:
     def __init__(self,
                  exchange_connector: ExchangeConnector,
                  data_processor: DataProcessor,
-                 position_manager: PositionManager,
-                 execution_manager: ExecutionManager,
+                 position_manager: FundingRateArbitragePositionManager,
+                 execution_manager: FundingRateArbitrageExecuteManager,
                  # alert_service: AlertService, # 可选
                  risk_control_params: RiskControlParams): # 从配置文件加载风险参数
         """

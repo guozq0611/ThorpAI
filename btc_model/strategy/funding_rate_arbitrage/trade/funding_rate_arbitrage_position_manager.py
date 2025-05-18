@@ -3,109 +3,116 @@ import pickle
 import time
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from btc_model.strategy.funding_rate_arbitrage.hedged_position import HedgedPosition
+import threading
+
 from btc_model.core.util.log_util import logger
+from btc_model.core.wrapper.db_wrapper import DBWrapper
 from btc_model.strategy.funding_rate_arbitrage.exchange_connector import ExchangeConnector
 
-class Position:
-    """持仓对象，表示一个套利持仓"""
-    
-    def __init__(self, 
-                 position_id: str,
-                 exchange_id: str,
-                 spot_symbol: str, 
-                 swap_symbol: str,
-                 spot_position: float = 0,
-                 swap_position: float = 0,
-                 entry_spot_price: float = 0,
-                 entry_swap_price: float = 0,
-                 entry_basis: float = 0,
-                 entry_time: float = 0,
-                 last_update_time: float = 0,
-                 status: str = "open",
-                 pnl: float = 0,
-                 metadata: Dict = None):
-        """
-        初始化持仓对象
-        
-        Args:
-            position_id: 持仓ID
-            exchange_id: 交易所ID
-            spot_symbol: 现货交易对符号
-            swap_symbol: 永续合约交易对符号
-            spot_position: 现货持仓数量 (正为多, 负为空)
-            swap_position: 永续合约持仓数量 (正为多, 负为空)
-            entry_spot_price: 现货进场价格
-            entry_swap_price: 永续合约进场价格
-            entry_basis: 进场时的基差
-            entry_time: 进场时间戳
-            last_update_time: 最后更新时间戳
-            status: 持仓状态 ("open", "closing", "closed")
-            pnl: 当前盈亏
-            metadata: 其他元数据
-        """
-        self.position_id = position_id
-        self.exchange_id = exchange_id
-        self.spot_symbol = spot_symbol
-        self.swap_symbol = swap_symbol
-        self.spot_position = spot_position
-        self.swap_position = swap_position
-        self.entry_spot_price = entry_spot_price
-        self.entry_swap_price = entry_swap_price
-        self.entry_basis = entry_basis
-        self.entry_time = entry_time
-        self.last_update_time = last_update_time or time.time()
-        self.status = status
-        self.pnl = pnl
-        self.metadata = metadata or {}
-        
-    def to_dict(self) -> Dict:
-        """将持仓对象转换为字典"""
-        return {
-            'position_id': self.position_id,
-            'exchange_id': self.exchange_id,
-            'spot_symbol': self.spot_symbol,
-            'swap_symbol': self.swap_symbol,
-            'spot_position': self.spot_position,
-            'swap_position': self.swap_position,
-            'entry_spot_price': self.entry_spot_price,
-            'entry_swap_price': self.entry_swap_price,
-            'entry_basis': self.entry_basis,
-            'entry_time': self.entry_time,
-            'last_update_time': self.last_update_time,
-            'status': self.status,
-            'pnl': self.pnl,
-            'metadata': self.metadata,
-            'duration': time.time() - self.entry_time if self.entry_time > 0 else 0,
-            'entry_time_str': datetime.fromtimestamp(self.entry_time).strftime('%Y-%m-%d %H:%M:%S') if self.entry_time > 0 else ''
-        }
-        
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'Position':
-        """从字典创建持仓对象"""
-        return cls(
-            position_id=data.get('position_id', ''),
-            exchange_id=data.get('exchange_id', ''),
-            spot_symbol=data.get('spot_symbol', ''),
-            swap_symbol=data.get('swap_symbol', ''),
-            spot_position=float(data.get('spot_position', 0)),
-            swap_position=float(data.get('swap_position', 0)),
-            entry_spot_price=float(data.get('entry_spot_price', 0)),
-            entry_swap_price=float(data.get('entry_swap_price', 0)),
-            entry_basis=float(data.get('entry_basis', 0)),
-            entry_time=float(data.get('entry_time', 0)),
-            last_update_time=float(data.get('last_update_time', 0)),
-            status=data.get('status', 'open'),
-            pnl=float(data.get('pnl', 0)),
-            metadata=data.get('metadata', {})
-        )
+from trade.funding_rate_arbitrage_position import FundingRateArbitragePosition
 
-class PositionManager:
+# class FundingRateArbitragePosition:
+#     """持仓对象，表示一个套利持仓"""
+    
+#     def __init__(self, 
+#                  position_id: str,
+#                  exchange_id: str,
+#                  spot_symbol: str, 
+#                  swap_symbol: str,
+#                  spot_position: float = 0,
+#                  swap_position: float = 0,
+#                  entry_spot_price: float = 0,
+#                  entry_swap_price: float = 0,
+#                  entry_basis: float = 0,
+#                  entry_time: float = 0,
+#                  last_update_time: float = 0,
+#                  status: str = "open",
+#                  pnl: float = 0,
+#                  metadata: Dict = None):
+#         """
+#         初始化持仓对象
+        
+#         Args:
+#             position_id: 持仓ID
+#             exchange_id: 交易所ID
+#             spot_symbol: 现货交易对符号
+#             swap_symbol: 永续合约交易对符号
+#             spot_position: 现货持仓数量 (正为多, 负为空)
+#             swap_position: 永续合约持仓数量 (正为多, 负为空)
+#             entry_spot_price: 现货进场价格
+#             entry_swap_price: 永续合约进场价格
+#             entry_basis: 进场时的基差
+#             entry_time: 进场时间戳
+#             last_update_time: 最后更新时间戳
+#             status: 持仓状态 ("open", "closing", "closed")
+#             pnl: 当前盈亏
+#             metadata: 其他元数据
+#         """
+#         self.position_id = position_id
+#         self.exchange_id = exchange_id
+#         self.spot_symbol = spot_symbol
+#         self.swap_symbol = swap_symbol
+#         self.spot_position = spot_position
+#         self.swap_position = swap_position
+#         self.entry_spot_price = entry_spot_price
+#         self.entry_swap_price = entry_swap_price
+#         self.entry_basis = entry_basis
+#         self.entry_time = entry_time
+#         self.last_update_time = last_update_time or time.time()
+#         self.status = status
+#         self.pnl = pnl
+#         self.metadata = metadata or {}
+        
+#     def to_dict(self) -> Dict:
+#         """将持仓对象转换为字典"""
+#         return {
+#             'position_id': self.position_id,
+#             'exchange_id': self.exchange_id,
+#             'spot_symbol': self.spot_symbol,
+#             'swap_symbol': self.swap_symbol,
+#             'spot_position': self.spot_position,
+#             'swap_position': self.swap_position,
+#             'entry_spot_price': self.entry_spot_price,
+#             'entry_swap_price': self.entry_swap_price,
+#             'entry_basis': self.entry_basis,
+#             'entry_time': self.entry_time,
+#             'last_update_time': self.last_update_time,
+#             'status': self.status,
+#             'pnl': self.pnl,
+#             'metadata': self.metadata,
+#             'duration': time.time() - self.entry_time if self.entry_time > 0 else 0,
+#             'entry_time_str': datetime.fromtimestamp(self.entry_time).strftime('%Y-%m-%d %H:%M:%S') if self.entry_time > 0 else ''
+#         }
+        
+#     @classmethod
+#     def from_dict(cls, data: Dict) -> 'FundingRateArbitragePosition':
+#         """从字典创建持仓对象"""
+#         return cls(
+#             position_id=data.get('position_id', ''),
+#             exchange_id=data.get('exchange_id', ''),
+#             spot_symbol=data.get('spot_symbol', ''),
+#             swap_symbol=data.get('swap_symbol', ''),
+#             spot_position=float(data.get('spot_position', 0)),
+#             swap_position=float(data.get('swap_position', 0)),
+#             entry_spot_price=float(data.get('entry_spot_price', 0)),
+#             entry_swap_price=float(data.get('entry_swap_price', 0)),
+#             entry_basis=float(data.get('entry_basis', 0)),
+#             entry_time=float(data.get('entry_time', 0)),
+#             last_update_time=float(data.get('last_update_time', 0)),
+#             status=data.get('status', 'open'),
+#             pnl=float(data.get('pnl', 0)),
+#             metadata=data.get('metadata', {})
+#         )
+
+class FundingRateArbitragePositionManager:
     """
     持仓管理器，负责管理资金费率套利策略的持仓
     """
     
-    def __init__(self, exchange_connector: ExchangeConnector, db_wrapper=None):
+    def __init__(self, 
+                 exchange_connector: ExchangeConnector, 
+                 db_wrapper: DBWrapper=None
+                 ):
         """
         初始化持仓管理器
         
@@ -114,8 +121,11 @@ class PositionManager:
             db_wrapper: 数据库连接包装器（可选）
         """
         self.exchange_connector = exchange_connector
-        self.db_wrapper = db_wrapper
-        self.positions: Dict[str, Position] = {}  # 持仓字典，键为持仓ID
+        self.db_wrapper: DBWrapper = db_wrapper
+
+        self._lock = threading.Lock()
+
+        self.positions: Dict[int, FundingRateArbitragePosition] = {}  # 持仓字典，键为持仓ID
         self.load_positions_from_db()
         
     def load_positions_from_db(self):
@@ -124,198 +134,214 @@ class PositionManager:
             logger.warning("数据库连接未提供，无法从数据库加载持仓")
             return
             
-        try:
-            query = """
-            SELECT * FROM funding_rate_arbitrage_positions
-            WHERE status = 'open'
-            """
-            
-            rows = self.db_wrapper.fetch_result(query)
-            if not rows:
-                logger.info("没有找到活跃的资金费率套利持仓")
-                return
+        with self._lock:
+            try:
+                query = """
+                SELECT * FROM funding_rate_arbitrage_position
+                WHERE status = 'open'
+                """
                 
-            for row in rows:
-                position = Position.from_dict(row)
-                self.positions[position.position_id] = position
-                
-            logger.info(f"从数据库加载了 {len(self.positions)} 个活跃持仓")
+                rows = self.db_wrapper.fetch_result(query)
+                if not rows:
+                    logger.info("没有找到活跃的资金费率套利持仓")
+                    return
+                    
+                for row in rows:
+                    position = FundingRateArbitragePosition.from_dict(row)
+                    self.positions[position.position_id] = position
+                    
+                logger.info(f"从数据库加载了 {len(self.positions)} 个活跃持仓")
             
-        except Exception as e:
-            logger.error(f"从数据库加载持仓失败: {e}")
+            except Exception as e:
+                logger.error(f"从数据库加载持仓失败: {e}")
             
-    def get_all_positions(self) -> List[Position]:
+    def get_all_positions(self) -> List[FundingRateArbitragePosition]:
         """获取所有持仓"""
-        return list(self.positions.values())
+        with self._lock:
+            return list(self.positions.values())
         
-    def get_position(self, position_id: str) -> Optional[Position]:
+    def get_position(self, position_id: int) -> Optional[FundingRateArbitragePosition]:
         """获取指定ID的持仓"""
-        return self.positions.get(position_id)
+        with self._lock:
+            return self.positions.get(position_id)
         
     def get_active_positions_count(self) -> int:
         """获取活跃持仓数量"""
-        return len([p for p in self.positions.values() if p.status == 'open'])
+        with self._lock:
+            return len([p for p in self.positions.values() if p.status == 'open'])
         
-    def add_position(self, position: Position) -> bool:
+    def add_position(self, position: FundingRateArbitragePosition) -> bool:
         """添加新持仓"""
-        if position.position_id in self.positions:
-            logger.warning(f"持仓ID已存在: {position.position_id}")
-            return False
-            
-        self.positions[position.position_id] = position
-        
-        # 保存到数据库
-        if self.db_wrapper:
-            try:
-                position_dict = position.to_dict()
-                
-                # 构建SQL插入语句
-                columns = ", ".join(position_dict.keys())
-                placeholders = ", ".join(["%s"] * len(position_dict))
-                values = tuple(position_dict.values())
-                
-                query = f"""
-                INSERT INTO funding_rate_arbitrage_positions ({columns})
-                VALUES ({placeholders})
-                """
-                
-                self.db_wrapper.execute_sql(query, values)
-                logger.info(f"成功添加持仓: {position.position_id}")
-                
-            except Exception as e:
-                logger.error(f"保存持仓到数据库失败: {e}")
+        with self._lock:
+            if position.position_id in self.positions:
+                logger.warning(f"持仓ID已存在: {position.position_id}")
                 return False
                 
-        return True
-        
-    def update_position(self, position: Position) -> bool:
-        """更新持仓"""
-        if position.position_id not in self.positions:
-            logger.warning(f"持仓ID不存在: {position.position_id}")
-            return False
+            self.positions[position.position_id] = position
             
-        self.positions[position.position_id] = position
-        
-        # 更新数据库
-        if self.db_wrapper:
-            try:
-                position_dict = position.to_dict()
-                
-                # 构建SQL更新语句
-                set_clause = ", ".join([f"{key} = %s" for key in position_dict.keys()])
-                values = list(position_dict.values())
-                values.append(position.position_id)  # WHERE子句的值
-                
-                query = f"""
-                UPDATE funding_rate_arbitrage_positions
-                SET {set_clause}
-                WHERE position_id = %s
-                """
-                
-                self.db_wrapper.execute_sql(query, tuple(values))
-                logger.info(f"成功更新持仓: {position.position_id}")
-                
-            except Exception as e:
-                logger.error(f"更新持仓信息失败: {e}")
-                return False
-                
-        return True
-        
-    def close_position(self, position_id: str, final_pnl: float = None) -> bool:
-        """关闭持仓"""
-        if position_id not in self.positions:
-            logger.warning(f"持仓ID不存在: {position_id}")
-            return False
-            
-        position = self.positions[position_id]
-        position.status = 'closed'
-        position.last_update_time = time.time()
-        
-        if final_pnl is not None:
-            position.pnl = final_pnl
-            
-        # 更新数据库
-        if self.db_wrapper:
-            try:
-                query = """
-                UPDATE funding_rate_arbitrage_positions
-                SET status = 'closed', last_update_time = %s, pnl = %s
-                WHERE position_id = %s
-                """
-                
-                values = (position.last_update_time, position.pnl, position_id)
-                self.db_wrapper.execute_sql(query, values)
-                logger.info(f"成功关闭持仓: {position_id}, 最终盈亏: {position.pnl}")
-                
-            except Exception as e:
-                logger.error(f"关闭持仓失败: {e}")
-                return False
-                
-        return True
-        
-    def update_all_positions_status(self):
-        """更新所有持仓的状态和盈亏"""
-        # 获取最新市场数据
-        for position_id, position in list(self.positions.items()):
-            if position.status != 'open':
-                continue
-                
-            try:
-                # 获取最新现货和永续合约价格
-                spot_ticker = self.exchange_connector.fetch_ticker(position.spot_symbol)
-                swap_ticker = self.exchange_connector.fetch_ticker(position.swap_symbol)
-                
-                if not spot_ticker or not swap_ticker:
-                    logger.warning(f"无法获取持仓 {position_id} 的最新价格数据")
-                    continue
+            # 保存到数据库
+            if self.db_wrapper:
+                try:
+                    position_dict = position.to_dict()
                     
-                # 计算当前盈亏
-                spot_price = spot_ticker['last']
-                swap_price = swap_ticker['last']
+                    # 构建SQL插入语句
+                    columns = ", ".join(position_dict.keys())
+                    placeholders = ", ".join(["%s"] * len(position_dict))
+                    values = tuple(position_dict.values())
+                    
+                    query = f"""
+                    INSERT INTO funding_rate_arbitrage_position ({columns})
+                    VALUES ({placeholders})
+                    """
+                    
+                    self.db_wrapper.execute_sql(query, values)
+                    logger.info(f"成功添加持仓: {position.position_id}")
+                    
+                except Exception as e:
+                    logger.error(f"保存持仓到数据库失败: {e}")
+                    return False
+                    
+            return True
+        
+    def update_position(self, position: FundingRateArbitragePosition) -> bool:
+        """更新持仓"""
+        with self._lock:
+            if position.position_id not in self.positions:
+                logger.warning(f"持仓ID不存在: {position.position_id}")
+                return False
                 
-                # 对于多现货空合约的持仓，盈亏计算公式为:
-                # PNL = spot_position * (current_spot_price - entry_spot_price) + 
-                #       swap_position * (entry_swap_price - current_swap_price)
-                spot_pnl = position.spot_position * (spot_price - position.entry_spot_price)
-                swap_pnl = position.swap_position * (position.entry_swap_price - swap_price)
-                total_pnl = spot_pnl + swap_pnl
-                
-                # 更新持仓盈亏
-                position.pnl = total_pnl
-                position.last_update_time = time.time()
-                
-                # 更新数据库
-                if self.db_wrapper:
-                    query = """
-                    UPDATE funding_rate_arbitrage_positions
-                    SET pnl = %s, last_update_time = %s
+            self.positions[position.position_id] = position
+        
+            # 更新数据库
+            if self.db_wrapper:
+                try:
+                    position_dict = position.to_dict()
+                    
+                    # 构建SQL更新语句
+                    set_clause = ", ".join([f"{key} = %s" for key in position_dict.keys()])
+                    values = list(position_dict.values())
+                    values.append(position.position_id)  # WHERE子句的值
+                    
+                    query = f"""
+                    UPDATE funding_rate_arbitrage_position
+                    SET {set_clause}
                     WHERE position_id = %s
                     """
                     
-                    values = (position.pnl, position.last_update_time, position_id)
-                    self.db_wrapper.execute_sql(query, values)
+                    self.db_wrapper.execute_sql(query, tuple(values))
+                    logger.info(f"成功更新持仓: {position.position_id}")
                     
-            except Exception as e:
-                logger.error(f"更新持仓 {position_id} 状态失败: {e}")
+                except Exception as e:
+                    logger.error(f"更新持仓信息失败: {e}")
+                    return False
+                    
+            return True
+        
+    def close_position(self, position_id: str, final_pnl: float = None) -> bool:
+        """关闭持仓"""
+        with self._lock:
+            if position_id not in self.positions:
+                logger.warning(f"持仓ID不存在: {position_id}")
+                return False
                 
-        logger.info(f"更新了 {len(self.positions)} 个持仓的状态")
+            position = self.positions[position_id]
+            position.status = 'closed'
+            position.last_update_time = time.time()
+            
+            if final_pnl is not None:
+                position.pnl = final_pnl
+                
+            # 更新数据库
+            if self.db_wrapper:
+                try:
+                    query = """
+                    UPDATE funding_rate_arbitrage_position
+                    SET status = 'closed', 
+                        last_update_time = %s, 
+                        pnl = %s
+                    WHERE position_id = %s
+                    """
+                    
+                    values = (position.last_update_time, position.pnl, position_id)
+                    self.db_wrapper.execute_sql(query, values)
+                    logger.info(f"成功关闭持仓: {position_id}, 最终盈亏: {position.pnl}")
+                    
+                except Exception as e:
+                    logger.error(f"关闭持仓失败: {e}")
+                    return False
+                    
+            return True
         
-    def get_position_by_symbols(self, spot_symbol: str, swap_symbol: str) -> Optional[Position]:
-        """根据交易对符号获取持仓"""
-        for position in self.positions.values():
-            if (position.spot_symbol == spot_symbol and 
-                position.swap_symbol == swap_symbol and 
-                position.status == 'open'):
-                return position
-        return None
+    def update_all_positions_status(self):
+        """更新所有持仓的状态和盈亏"""
+        with self._lock:
+            # 获取最新市场数据
+            for position_id, position in list(self.positions.items()):
+                if position.status != 'open':
+                    continue
+                    
+                try:
+                    # 获取最新现货和永续合约价格
+                    spot_ticker = self.exchange_connector.fetch_ticker(position.spot_symbol)
+                    swap_ticker = self.exchange_connector.fetch_ticker(position.swap_symbol)
+                    
+                    if not spot_ticker or not swap_ticker:
+                        logger.warning(f"无法获取持仓 {position_id} 的最新价格数据")
+                        continue
+                        
+                    # 计算当前盈亏
+                    spot_price = spot_ticker['last']
+                    swap_price = swap_ticker['last']
+                    
+                    # 对于多现货空合约的持仓，盈亏计算公式为:
+                    # PNL = spot_position * (current_spot_price - entry_spot_price) + 
+                    #       swap_position * (entry_swap_price - current_swap_price)
+                    spot_pnl = position.spot_position * (spot_price - position.entry_spot_price)
+                    swap_pnl = position.swap_position * (position.entry_swap_price - swap_price)
+                    total_pnl = spot_pnl + swap_pnl
+                    
+                    # 更新持仓盈亏
+                    position.pnl = total_pnl
+                    position.last_update_time = time.time()
+                    
+                    # 更新数据库
+                    if self.db_wrapper:
+                        query = """
+                        UPDATE funding_rate_arbitrage_position
+                        SET pnl = %s, 
+                            last_update_time = %s
+                        WHERE position_id = %s
+                        """
+                        
+                        values = (position.pnl, position.last_update_time, position_id)
+                        self.db_wrapper.execute_sql(query, values)
+                        
+                except Exception as e:
+                    logger.error(f"更新持仓 {position_id} 状态失败: {e}")
+                    
+            logger.info(f"更新了 {len(self.positions)} 个持仓的状态")
         
-    def get_positions_by_exchange(self, exchange_id: str) -> List[Position]:
+    def get_active_position_by_symbol_id(self, symbol_id: str) -> List[FundingRateArbitragePosition]:
+        """根据交易对符号获取活跃持仓"""
+        with self._lock:
+            active_positions = []
+            for position in self.positions.values():
+                if (position.symbol_id == symbol_id and 
+                    position.status in ['OPENING', 'OPENED', 'CLOSING']):
+                    active_positions.append(position)
+            return active_positions
+        
+    
+        
+    def get_positions_by_exchange(self, exchange_id: str) -> List[FundingRateArbitragePosition]:
         """获取指定交易所的所有持仓"""
-        return [p for p in self.positions.values() if p.exchange_id == exchange_id]
+        with self._lock:
+            return [p for p in self.positions.values() if p.exchange_id == exchange_id]
         
     def get_total_pnl(self) -> float:
         """获取所有持仓的总盈亏"""
-        return sum(p.pnl for p in self.positions.values())
+        with self._lock:
+            return sum(p.pnl for p in self.positions.values())
         
     def sync_positions_with_exchange(self):
         """
@@ -367,7 +393,7 @@ class PositionManager:
                                     swap_size: float,
                                     spot_price: float,
                                     swap_price: float,
-                                    basis: float) -> Optional[Position]:
+                                    basis: float) -> Optional[FundingRateArbitragePosition]:
         """
         创建新的资金费率套利持仓
         
@@ -389,7 +415,7 @@ class PositionManager:
             position_id = f"FR_{exchange_id}_{spot_symbol}_{int(time.time())}"
             
             # 创建新持仓
-            position = Position(
+            position = FundingRateArbitragePosition(
                 position_id=position_id,
                 exchange_id=exchange_id,
                 spot_symbol=spot_symbol,

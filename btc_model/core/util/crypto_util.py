@@ -938,7 +938,7 @@ class CryptoUtil:
             return result
             
         except Exception as e:
-            logging.error(f"比较币种信息时出错: {e}")
+            Logger.error(f"比较币种信息时出错: {e}")
             return {
                 'common_symbols': [],
                 'suspicious_pairs': [],

@@ -32,6 +32,32 @@ export const appPages = {
 				text: '策略概览',
 				icon: 'HeroChartBar',
 			},
+			fundingRateArbitrage: {
+				id: 'fundingRateArbitrage',
+				to: '/strategy/funding-rate',
+				text: '资金费率套利',
+				icon: 'HeroCurrencyDollar',
+				subPages: {
+					arbitrageList: {
+						id: 'fundingRateArbitrageList',
+						to: '/strategy/funding-rate/arbitrage',
+						text: '套利列表',
+						icon: 'HeroTable',
+					},
+					whitelist: {
+						id: 'fundingRateWhitelist',
+						to: '/strategy/funding-rate/whitelist',
+						text: '白名单管理',
+						icon: 'HeroClipboardDocument',
+					},
+					signals: {
+						id: 'fundingRateSignals',
+						to: '/strategy/funding-rate/signals',
+						text: '交易信号',
+						icon: 'HeroBell',
+					},
+				},
+			},
 			crossExchangeArbitrage: {
 				id: 'crossExchangeArbitrage',
 				to: '/strategy/cross-exchange',

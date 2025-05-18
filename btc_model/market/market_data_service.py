@@ -145,6 +145,14 @@ class MarketDataService:
             self.perpetual_exchanges[exchange_id] = self.pro_exchanges[exchange_id]
             Logger.info(f"设置永续合约交易所: {exchange_id}")   
 
+    def get_spot_symbols(self, exchange_id: str) -> Set[str]:
+        """获取所有现货交易对"""
+        return set(self.exchanges[exchange_id].symbols)
+
+    def get_swap_symbols(self, exchange_id: str) -> Set[str]:
+        """获取所有永续合约交易对"""
+        return set(self.perpetual_exchanges[exchange_id].symbols)
+
     def subscribe_bbo(self, exchange_id: str, symbol: str) -> None:
         """订阅特定交易所和交易对的bbo"""
         key = f"{exchange_id}:{symbol}"
@@ -248,7 +256,6 @@ class MarketDataService:
         with self.lock:
             return self.tickers.get(key, {'ticker': [], 'timestamp': 0})
     
-
     def get_funding_rate(self, exchange_id: str, symbol: str) -> Dict[str, Any]:
         """获取特定交易所和交易对的资金费率"""
         key = f"{exchange_id}:{symbol}"
@@ -497,24 +504,23 @@ class MarketDataService:
                         subscription_tasks[f"{task_key}:swap"] = task
                         new_tasks.append(task)
                 
-                
-                # # 处理资金费率数据订阅
-                # for exchange_id, pro_exchange in list(self.pro_exchanges.items()):
-                #     # 只处理合约产品的资金费率
-                #     product_type = 'swap'
-                #     # 检查此交易所是否已有活跃的资金费率订阅任务
-                #     task_key = f"funding_rate:{exchange_id}"
-                #     if task_key in subscription_tasks and not subscription_tasks[task_key].done():
-                #         # 如果任务仍在运行，跳过创建新任务
-                #         continue
+                # 处理资金费率数据订阅
+                for exchange_id, exchange in list(self.perpetual_exchanges.items()):
+                    # 只处理合约产品的资金费率
+                    product_type = 'swap'
+                    # 检查此交易所是否已有活跃的资金费率订阅任务
+                    task_key = f"funding_rate:{exchange_id}"
+                    if task_key in subscription_tasks and not subscription_tasks[task_key].done():
+                        # 如果任务仍在运行，跳过创建新任务
+                        continue
                     
-                #     # 获取该交易所订阅的所有交易对
-                #     symbols = list(self.get_subscribed_symbols_by_exchange('funding_rate', product_type, exchange_id))
-                #     if symbols:
-                #         # 创建批量获取资金费率的任务
-                #         task = asyncio.create_task(self._watch_funding_rate_for_symbols(exchange_id, symbols))
-                #         subscription_tasks[task_key] = task
-                #         new_tasks.append(task)
+                    # 获取该交易所订阅的所有交易对
+                    symbols = list(self.get_subscribed_symbols_by_exchange('funding_rate', product_type, exchange_id))
+                    if symbols:
+                        # 创建批量获取资金费率的任务
+                        task = asyncio.create_task(self._watch_funding_rate_for_symbols(exchange, symbols))
+                        subscription_tasks[task_key] = task
+                        new_tasks.append(task)
                         
                 # 清理已完成的任务
                 for key in list(subscription_tasks.keys()):
@@ -619,7 +625,7 @@ class MarketDataService:
                         }
     
     
-    async def _watch_funding_rate_for_symbols(self, exchange: ccxt.Exchange, symbols: List[str]) -> None:
+    async def _watch_funding_rate_for_symbols(self, exchange: ccxtpro.Exchange, symbols: List[str]) -> None:
         """使用WEBSOCKET或REST API获取资金费率"""
  
     
