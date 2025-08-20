@@ -1,7 +1,7 @@
 # exchange_connector.py
 import ccxt
 import time
-
+import pandas as pd
 from btc_model.setting.setting import get_settings
 from btc_model.core.util.log_util import logger
 
@@ -149,7 +149,58 @@ class ExchangeConnector:
         except Exception as e:
             logger.error(f"获取账户余额时发生未知错误: {e}")
             return None
-
+        
+    def get_currency_balance(self, currency:str, param:str='total'):
+        """
+        获取指定货币的余额信息
+        :param currency: 货币名称 (例如 'USDT')
+        :param param: 余额类型 (例如 'free', 'used', 'total')
+        :return: 余额信息
+        """
+        balance = self.fetch_balance()
+        if balance:
+            return balance.get(currency, {'free': 0, 'used': 0, 'total': 0}).get(param)
+        return 0
+        
+    def get_position_info(self):
+        """
+        获取所有持仓信息
+        :return: Position dict 或 None
+        """
+        positions = self.fetch_positions()
+        if positions:
+            data = []
+            for pos in positions:
+                data.append({
+                    'symbol': pos['symbol'],               # 交易对符号，如 BTC/USDT:USDT
+                    'notional': pos['notional'],           # 名义价值，合约价值(美元)
+                    'marginMode': pos['marginMode'],       # 保证金模式，如 cross(全仓) 或 isolated(逐仓)
+                    'liquidationPrice': pos['liquidationPrice'],  # 强平价格
+                    'entryPrice': pos['entryPrice'],       # 开仓均价
+                    'unrealizedPnl': pos['unrealizedPnl'], # 未实现盈亏
+                    'realizedPnl': pos['realizedPnl'],     # 已实现盈亏
+                    'percentage': pos['percentage'],       # 收益百分比
+                    'contracts': pos['contracts'],         # 合约数量
+                    'contractSize': pos['contractSize'],   # 合约面值
+                    'markPrice': pos['markPrice'],         # 标记价格
+                    'side': pos['side'],                   # 持仓方向，如 long(多) 或 short(空)
+                    'timestamp': pos['timestamp'],         # 时间戳(毫秒)
+                    'datetime': pos['datetime'],           # 人类可读的时间
+                    'lastUpdateTimestamp': pos['lastUpdateTimestamp'],  # 最后更新时间戳
+                    'maintenanceMargin': pos['maintenanceMargin'],      # 维持保证金
+                    'maintenanceMarginPercentage': pos['maintenanceMarginPercentage'],  # 维持保证金比例
+                    'collateral': pos['collateral'],       # 抵押品价值
+                    'initialMargin': pos['initialMargin'], # 初始保证金
+                    'initialMarginPercentage': pos['initialMarginPercentage'],  # 初始保证金比例
+                    'leverage': pos['leverage'],           # 杠杆倍数
+                    'marginRatio': pos['marginRatio'],     # 保证金率
+                })
+                
+            if len(data) > 0:
+                return pd.DataFrame(data)
+            
+        return None
+        
     def get_account_info(self, params=None):
         """
         获取账户详细信息，包括账户类型、保证金、杠杆、风险率等

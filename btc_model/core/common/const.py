@@ -144,7 +144,7 @@ class PositionSide(Enum):
     LONG = "LONG"   # 多
     SHORT = "SHORT" # 空
     NET = "NET"     # 净持仓
-
+    NONE = "NONE"   # 无持仓
 
 class OrderStatus(Enum):
     """

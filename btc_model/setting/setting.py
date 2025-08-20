@@ -9,9 +9,10 @@ SETTINGS: Dict[str, Any] = {
     # 配置request url需要的proxies，如果网络环境无需代理，注释即可
     "common.proxies": {
      
-        'http': 'http://127.0.0.1:7897',
-        'https': 'http://127.0.0.1:7897'
-
+        # 'http': 'http://127.0.0.1:7897',
+        # 'https': 'http://127.0.0.1:7897'
+        'http': '',
+        'https': ''
     },
 
 
@@ -178,11 +179,13 @@ SETTINGS: Dict[str, Any] = {
     # ------------------------------------------------------  
     "strategy.funding_rate_arbitrage": {
         "common_params": {
-            "total_capital_limit_usd": 100,         # 策略总资金限制(USD/USDT)
+            "total_capital_limit_usd": 300,         # 策略总资金限制(USD/USDT)
+            "max_concurrent_positions": 3,          # 最大同时活跃套利头寸数量
+            "amount_per_position": 100,            # 每个套利头寸的资金量
+
             "min_annualized_funding_rate": 0.15,    # 最小开仓预测年化资金费率 
             "min_basis_for_open": 0.0,              # 最小开仓实时基差 
             "max_acceptable_basis": 0.002,          # 最大可接受实时基差 
-            "max_concurrent_positions": 5,          # 最大同时活跃套利头寸数量
             "min_position_size_usd": 100,           # 最小开仓名义价值 (USD/USDT)
             "max_position_size_usd": 1000,          # 最大开仓名义价值 (USD/USDT)
             "funding_rate_close_threshold": 0.05    # 平仓触发的年化资金费率 
@@ -203,6 +206,12 @@ SETTINGS: Dict[str, Any] = {
             "total_floating_pnl_limit": -0.1,       # 总浮动亏损占总投入资金的比例限制 (例如 -10%)
         },
         "execution_params": {
+            "order_timeout": 30,                     # 订单超时时间 (秒)
+            "retry_times": 5,                        # 重试次数
+            "order_imbalance_threshold": 10,         # 残腿阈值，单位为USDT
+            "order_chase_times": 5,                  # 追单次数
+            "imbalance_adjust_times": 5,             # 残腿调整次数
+
             "spot_td_mode": "cash",                  # 现货交易模式 (通常是cash)
             "swap_td_mode": "isolated",              # 永续合约交易模式 (cross 或 isolated)
             "spot_order_type_open": "market",        # 现货开仓订单类型 (market, limit) 

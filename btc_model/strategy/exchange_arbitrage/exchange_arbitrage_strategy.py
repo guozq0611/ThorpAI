@@ -133,7 +133,7 @@ class ExchangeArbitrageStrategy:
         
         if not is_live and not hedge_exchange.isSandboxModeEnabled:
             raise ValueError(f"模拟环境不能使用真实交易所(perpetual): {hedge_exchange.id}")
-        
+
         self.exchange_1 = exchange_1
         self.exchange_2 = exchange_2
         self.hedge_exchange = hedge_exchange
@@ -216,7 +216,7 @@ class ExchangeArbitrageStrategy:
         """
         fecth_ressult = DBUtil.get_instance().fetch_result(sql)
         self.arbitrage_positions = {result[0]: result[1] for result in fecth_ressult}
-
+    
     def _subscribe_market_data(self):
         """
         订阅交易对的行情数据
@@ -316,7 +316,7 @@ class ExchangeArbitrageStrategy:
             if bbo_hedge:
                 self.pair_data[symbol_id]['exchange_hedge_updatetime'] = bbo_hedge['timestamp']
             
-               # 更新时间戳
+            # 更新时间戳
             self.pair_data[symbol_id]['timestamp'] = int(time.time() * 1000)
         except Exception as e:
             Logger.error(f"更新交易对数据异常: {symbol_id}, 错误: {str(e)}")
@@ -360,7 +360,7 @@ class ExchangeArbitrageStrategy:
     def broadcast_arbitrage_signal(self, symbol_id: str, data: dict):
         """广播套利信号"""
         hedge_symbol = CryptoUtil.convert_symbol_to_contract(self.hedge_exchange, symbol_id)
-    
+        
         Logger.info(
             f"套利信号触发: {symbol_id:<15} 价差: {data['spread']:>6.2%}, {data['comment']}"
         )
@@ -661,8 +661,8 @@ def run():
     perpetual_markets = CryptoUtil.get_perpetual_markets(exchange=hedge_exchange)
     perpetual_bases = {market_data['base'] for market_data in perpetual_markets.values()}
     pairs = [pair for pair in pairs if pair['quote'] == 'USDT' and pair['base'] in perpetual_bases]
-   
- 
+
+    
     context = Context.get_instance()
     context.market_data_service = market_data_service
     context.service_manager = service_manager
@@ -743,7 +743,7 @@ def run():
 
     
     Logger.info("跨交易所套利监控程序已启动")
-
+    
     try:
         # 运行策略
         asyncio.run(strategy.execute())
@@ -766,4 +766,3 @@ if __name__ == "__main__":
 
 
     
-   

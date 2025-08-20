@@ -1,11 +1,13 @@
-from typing import Dict, List, Optional
+
 import threading
 import datetime, time
-import ccxt
-import ccxt.pro as ccxtpro
 import asyncio
 import traceback
-from typing import Union
+import ccxt
+import ccxt.pro as ccxtpro
+
+from typing import Union, Dict, List, Optional
+from collections import defaultdict
 from ccxt.base.errors import RequestTimeout, NetworkError
 
 from btc_model.core.common.const import OrderStatus, EventType
@@ -16,32 +18,35 @@ from btc_model.core.util.crypto_util import CryptoUtil, ORDERTYPE_2CCXT, DIRECTI
 from btc_model.core.util.crypto_hedge_util import CryptoHedgeUtil
 from btc_model.market.market_data_service import MarketDataService
 
-from btc_model.trade.position_manager import PositionManager
-
-from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_order import FundingRateArbitrageOrder
-from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_hedge_order import FundingRateArbitrageHedgeOrder
-from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position import FundingRateArbitragePosition
-
 from btc_model.core.common.context import Context
-from btc_model.trade.position_holder import PositionHolder
 from btc_model.core.common.const import PositionSide, Exchange, Direction, Offset, OrderType
 from btc_model.core.common.object import OrderData, OrderRequest
-from collections import defaultdict
+
 from btc_model.core.engine.event_engine import EventEngine, Event
 from btc_model.manager.instance_manager import get_instance
 from btc_model.manager.service_manager import ServiceManager
+
+from btc_model.strategy.funding_rate_arbitrage.strategy_params import StrategyParams
+
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_order import FundingRateArbitrageOrder
+#from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_hedge_order import FundingRateArbitrageHedgeOrder
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position import FundingRateArbitragePosition
+from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position_manager import FundingRateArbitragePositionManager
 
 class FundingRateArbitrageExecuteManager():
     """
     资金费率套利执行管理器
     """
     def __init__(self,
+                 strategy_params: StrategyParams,
                  exchange: ccxt.Exchange, 
+                 position_manager: FundingRateArbitragePositionManager,
                  market_data_service: MarketDataService,
                  service_manager: ServiceManager
                  ):
         self.exchange = exchange
-
+        self.position_manager = position_manager
+        self.strategy_params = strategy_params
 
         self.market_data_service: MarketDataService = market_data_service
         self.service_manager: ServiceManager = service_manager
@@ -52,14 +57,12 @@ class FundingRateArbitrageExecuteManager():
 
         self.perpetual_markets = CryptoUtil.get_perpetual_markets(exchange=self.exchange)
         
-       
-     
-        self.active_orders: Dict[str, FundingRateArbitrageOrder | FundingRateArbitrageHedgeOrder] = {}
+        self.active_orders: Dict[str, FundingRateArbitrageOrder] = {}
         # 当前正在交易中的货币对, 为了防止重复创建仓位, 如果int > 0 表示有正在进行中的货币对
         self.active_symbol_ids: Dict[str, int] = defaultdict(int)
 
-        # 当前正在交易中的套利仓位，key为symbol_id；当仓位建好后，才能进行后续的现货一买一卖
-        self.position_holder: Dict[str, FundingRateArbitragePosition] = {}
+        # # 当前正在交易中的套利仓位，key为symbol_id；当仓位建好后，才能进行后续的现货一买一卖
+        # self.position_holder: Dict[tuple[str, str], FundingRateArbitragePosition] = {}
 
         self.lock = threading.Lock()
         self._start_monitor()
@@ -72,8 +75,23 @@ class FundingRateArbitrageExecuteManager():
         self.event_engine.register(EventType.ON_CANCEL, self.on_order_cancel)
         self.event_engine.register(EventType.ON_ORDER, self.on_order_update)
 
-    def create_arbitrage_position(self, symbol_id: str, volume: float) -> Optional[str]:
-        """创建套利仓位"""
+    def create_arbitrage_position(self, 
+                                  position_id: int,
+                                  exchange_id: str,
+                                  symbol_id: str, 
+                                  volume: float) -> Optional[FundingRateArbitrageOrder]:
+        """
+        创建套利仓位
+        @param position_id: 仓位ID
+        @param exchange_id: 交易所ID
+        @param symbol_id: 货币对
+        @param volume: 仓位数量
+        @return: 套利订单
+
+        @note: 
+        调用该方法时, 仓位应当已经写入数据库表(funding_rate_arbitrage_position)并处于OPENING状态
+
+        """
 
         # 如果仓位已经存在，则不创建
         with self.lock:
@@ -81,8 +99,21 @@ class FundingRateArbitrageExecuteManager():
                 Logger.warning(f"已存在正在进行的套利仓位, 不创建新仓位: {symbol_id}")
                 return None
             
-            if symbol_id not in self.position_holder:
-                self.position_holder[symbol_id] = FundingRateArbitragePosition(symbol_id, self.exchange)
+                # def __init__(self, 
+                #  position_id: int,
+                #  symbol_id: str,
+                #  spot_inst_id: str, 
+                #  swap_inst_id: str, 
+                #  swap_contract_size: float,
+                #  exchange: Exchange,
+                #  open_time: datetime
+                #  ):
+
+            spot_inst_id = symbol_id
+            swap_inst_id = CryptoUtil.convert_symbol_to_contract(self.exchange, symbol_id)
+            swap_contract_size = self.exchange.markets[swap_inst_id].get('contractSize', 1)
+            
+
             # 生成一个本地订单ID（用于套利整体）
             arb_order_id = SerialnoUtil.create_serial_no(prefix='', length=20)
 
@@ -92,7 +123,7 @@ class FundingRateArbitrageExecuteManager():
 
             # 使用新的类方法创建空订单
             spot_order = OrderData.create_empty(
-                symbol=symbol_id,
+                symbol=spot_inst_id,
                 exchange=EXCHANGE_FROM_CCXT[self.exchange.id],
                 client_id=spot_client_id
             )
@@ -108,11 +139,10 @@ class FundingRateArbitrageExecuteManager():
             spot_order.create_time = time.time()
 
             # 创建合约腿的初始订单
-            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange, symbol_id)
-            contract_size = self.exchange.markets[contract_symbol].get('contractSize', 1)
+   
 
             swap_order: OrderData = OrderData.create_empty(
-                symbol=contract_symbol,
+                symbol=swap_inst_id,
                 exchange=EXCHANGE_FROM_CCXT[self.exchange.id], 
                 client_id=swap_client_id
             )
@@ -121,30 +151,31 @@ class FundingRateArbitrageExecuteManager():
             swap_order.direction = Direction.SELL
             swap_order.offset = Offset.OPEN
             swap_order.price = 0
-            swap_order.volume = volume * 2 / contract_size
+            swap_order.volume = volume / swap_contract_size
             swap_order.volume_traded = 0
             swap_order.status = OrderStatus.NONE
             swap_order.datetime = datetime.datetime.now()
             swap_order.reference = ""
             swap_order.create_time = time.time()
 
-            arbitrage_hedge_order = FundingRateArbitrageHedgeOrder(
+            arbitrage_order = FundingRateArbitrageOrder(
                 order_id=arb_order_id,
                 symbol_id=symbol_id
             )
 
-            arbitrage_hedge_order.put_leg('spot', spot_order)
-            arbitrage_hedge_order.put_leg('swap', swap_order)
+            arbitrage_order.put_leg('spot', spot_order)
+            arbitrage_order.put_leg('swap', swap_order)
        
-            self.active_orders[arb_order_id] = arbitrage_hedge_order
+            self.active_orders[arb_order_id] = arbitrage_order
             self.active_symbol_ids[symbol_id] += 1
                 
 
             try:
-                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, symbol_id)
+                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange, symbol_id)
 
-                spot_price = self.get_price_safely(self.exchange, symbol_id, side='ask')
-                swap_price = self.get_price_safely(self.exchange, contract_symbol, side='bid')
+                # 第1次按买1、卖1挂单
+                spot_price = self.get_price_safely(self.exchange, symbol_id, side='bid')
+                swap_price = self.get_price_safely(self.exchange, contract_symbol, side='ask')
 
                 if spot_price == 0 or swap_price == 0:
                     Logger.warning(f"检测到行情异常, 不创建套利仓位: {symbol_id}")
@@ -153,8 +184,8 @@ class FundingRateArbitrageExecuteManager():
                 # 记录行情数据用于日志
                 Logger.info(
                     f"获取行情成功 | "
-                    f"exchange: {symbol_id} 卖1价: {spot_price} | "
-                    f"exchange_hedge: {contract_symbol} 买1价: {swap_price}"
+                    f"spot {symbol_id} 买1价: {spot_price} | "
+                    f"swap {contract_symbol} 卖1价: {swap_price}"
                 )
                 
                 # 创建限价单
@@ -177,25 +208,14 @@ class FundingRateArbitrageExecuteManager():
                     volume=swap_order.volume_remaining,
                     price=swap_price,
                     order_type=OrderType.LIMIT,
-                    direction=Direction.SELL
-                )
-                if updated_swap_order is not None:
-                    swap_order.copy_from(updated_swap_order)
-
-                updated_swap_order = self.send_swap_order(
-                    client_id=swap_client_id,
-                    exchange=self.exchange_hedge,
-                    symbol_id=contract_symbol,
-                    volume=swap_order.volume_remaining,
-                    price=swap_price,
-                    order_type=OrderType.LIMIT,
                     direction=Direction.SELL,
                     offset=Offset.OPEN
                 )
                 if updated_swap_order is not None:
-                    swap_order.copy_from(updated_swap_order)    
+                    swap_order.copy_from(updated_swap_order)
+ 
                     
-                return arbitrage_hedge_order
+                return arbitrage_order
                 
             except RequestTimeout as e:
                 Logger.error(
@@ -224,7 +244,8 @@ class FundingRateArbitrageExecuteManager():
                 )
                 #TODO: 这里需要监控提醒
                 # raise
-
+            
+            return None
    
 
     def _start_monitor(self):
@@ -247,7 +268,6 @@ class FundingRateArbitrageExecuteManager():
 
             spot_order, swap_order = arb_order.get_last_leg()
 
-
             # 检查订单状态为空或提交中，则查询订单，
             if spot_order.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
                 order_updated = self.query_order_by_client_id(self.exchange, spot_order.client_id, spot_order.symbol)
@@ -255,9 +275,9 @@ class FundingRateArbitrageExecuteManager():
                 
                 if order_updated is None:
                     if spot_order.direction == Direction.BUY:
-                        price = self.get_price_safely(self.exchange, spot_order.symbol, side='ask')
-                    else:
                         price = self.get_price_safely(self.exchange, spot_order.symbol, side='bid')
+                    else:
+                        price = self.get_price_safely(self.exchange, spot_order.symbol, side='ask')
                     
                     order_updated = self.send_spot_order(
                         client_id=spot_order.client_id,
@@ -270,42 +290,20 @@ class FundingRateArbitrageExecuteManager():
                     )   
                     if order_updated is not None:
                         spot_order.copy_from(order_updated)
-            
+
             if swap_order.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
-                order_updated = self.query_order_by_client_id(self.exchange_hedge, swap_order.client_id, swap_order.symbol)
-                # spot_order_2.copy_from(order_updated)
-                
-                if order_updated is None:
-                    if swap_order.direction == Direction.BUY:
-                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='bid')
-                    else:
-                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='ask')
-
-                    order_updated = self.send_spot_order(
-                        client_id=swap_order.client_id,
-                        exchange=self.exchange_hedge,
-                        symbol_id=swap_order.symbol,
-                        volume=swap_order.volume,
-                        price=price,
-                        order_type=OrderType.LIMIT,
-                        direction=swap_order.direction
-                    )
-                    if order_updated is not None:
-                        swap_order.copy_from(order_updated)
-
-            if isinstance(arb_order, FundingRateArbitrageHedgeOrder) and swap_order.status in {OrderStatus.NONE, OrderStatus.SUBMITTING}:
-                order_updated = self.query_order_by_client_id(self.exchange_hedge, swap_order.client_id, CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, arb_order.symbol_id))
+                order_updated = self.query_order_by_client_id(self.exchange, swap_order.client_id, CryptoUtil.convert_symbol_to_contract(self.exchange, arb_order.symbol_id))
                 # swap_order.copy_from(order_updated)
 
                 if order_updated is None:
                     if swap_order.direction == Direction.BUY:
-                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='bid')
+                        price = self.get_price_safely(self.exchange, swap_order.symbol, side='bid')
                     else:
-                        price = self.get_price_safely(self.exchange_hedge, swap_order.symbol, side='ask')
+                        price = self.get_price_safely(self.exchange, swap_order.symbol, side='ask')
 
                     order_updated = self.send_swap_order(
                         client_id=swap_order.client_id,
-                        exchange=self.exchange_hedge,
+                        exchange=self.exchange,
                         symbol_id=swap_order.symbol,
                         volume=swap_order.volume,
                         price=price,
@@ -326,24 +324,15 @@ class FundingRateArbitrageExecuteManager():
 
             
             if swap_order.is_active:
-                exhange_order = self.exchange_hedge.fetch_order(id=swap_order.order_id, symbol=swap_order.symbol)
-                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, exhange_order)
+                exhange_order = self.exchange.fetch_order(id=swap_order.order_id, symbol=swap_order.symbol)
+                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange, exhange_order)
                 
                 swap_order.volume_traded = updated_order.volume_traded
                 swap_order.status = updated_order.status
 
-            if isinstance(arb_order, FundingRateArbitrageHedgeOrder) and swap_order.is_active:
-                exhange_order = self.exchange_hedge.fetch_order(
-                    id=swap_order.order_id, 
-                    symbol=swap_order.symbol
-                    )
-                updated_order = CryptoUtil.convert_order_data_from_ccxt(self.exchange_hedge, exhange_order)
-                
-                swap_order.volume_traded = updated_order.volume_traded
-                swap_order.status = updated_order.status
                 
             # 检查是否需要撤单
-            if arb_order.is_active and arb_order.is_timeout(self.context.strategy_params.common_params.order_timeout):
+            if arb_order.is_active and arb_order.is_timeout(self.strategy_params.execution_params.order_timeout):
                 self._cancel_and_adjust(arb_order)
                 return
                 
@@ -356,27 +345,27 @@ class FundingRateArbitrageExecuteManager():
                 self.active_symbol_ids[arb_order.symbol_id] -= 1
 
                 # 更新对冲仓位的持仓数据
-                if isinstance(arb_order, FundingRateArbitrageHedgeOrder):
-                    arbitrage_position = self.position_holder[arb_order.symbol_id]
-
-                    spot_volume_traded = arb_order.get_leg_volume_traded('spot')
-                    swap_volume_traded = arb_order.get_leg_volume_traded('swap')
-
-                    arbitrage_position.spot_position += spot_volume_traded
-                    arbitrage_position.swap_position += swap_volume_traded
-                else:
-                    arbitrage_position = self.position_holder[arb_order.symbol_id]
-
-                    spot_volume_traded = arb_order.get_leg_volume_traded('spot')
-                    
-                    if arb_order.leg_spot_1[-1].direction == Direction.BUY:
-                        arbitrage_position.spot_position += spot_volume_traded
-                    else:
-                        arbitrage_position.spot_position -= spot_volume_traded
-                    
+                position_dict = {
+                    'exchange_id': self.exchange.id,
+                    'symbol_id': arb_order.symbol_id,
+                    'spot_position': arb_order.get_leg_volume_traded('spot'),
+                    'swap_position': arb_order.get_leg_volume_traded('swap'),
+                    'status': 'HOLDING'
+                }
+                self.position_manager.update_position(position_dict)           
 
                 Logger.info(f"套利订单 {arb_order.order_id} 完全成交")
             else:
+                              # 更新对冲仓位的持仓数据
+                position_dict = {
+                    'exchange_id': self.exchange.id,
+                    'symbol_id': arb_order.symbol_id,
+                    'spot_position': arb_order.get_leg_volume_traded('spot'),
+                    'swap_position': arb_order.get_leg_volume_traded('swap'),
+                    'status': 'OPENING'
+                }
+                self.position_manager.update_position(position_dict)    
+
                 Logger.info(f"套利订单 {arb_order.order_id} 未完全成交")
 
 
@@ -390,7 +379,6 @@ class FundingRateArbitrageExecuteManager():
             if order.is_active:
                 leg_spot, leg_swap = order.get_last_leg()
 
-
                 # 撤销未完成的订单
                 if leg_spot.status == OrderStatus.OPEN and leg_spot.volume_traded < leg_spot.volume:
                     self.cancel_order(exchange=self.exchange, order=leg_spot)
@@ -401,7 +389,7 @@ class FundingRateArbitrageExecuteManager():
 
                     volume_remaining = leg_spot.volume_remaining
                     if volume_remaining > 0:
-                        if len(order.leg_spot) > self.context.strategy_params.common_params.order_chase_times:
+                        if len(order.leg_spot) > self.strategy_params.execution_params.order_chase_times:
                             # TODO: 这里需要监控起来，比如发送邮件、拨打电话等，未来不影响效率，应该要使用异步任务来处理
                             Logger.warning(f"现货腿追单次数超过限制, 不再追单")
                             return
@@ -440,61 +428,16 @@ class FundingRateArbitrageExecuteManager():
                                 order.put_leg('spot', chase_order)
                     
                 if leg_swap.status == OrderStatus.OPEN and leg_swap.volume_traded < leg_swap.volume:
-                    self.cancel_order(exchange=self.exchange_hedge, order=leg_swap)
-
-                    if leg_spot.status != OrderStatus.CANCELLED:
-                        Logger.warning(f"现货腿撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_spot.status}")
-                        return
-
-                    volume_remaining = leg_spot.volume_remaining
-                    if volume_remaining > 0:
-                        if len(order.leg_spot) > self.context.strategy_params.common_params.order_chase_times:
-                            # TODO: 这里需要监控起来，比如发送邮件、拨打电话等，未来不影响效率，应该要使用异步任务来处理
-                            Logger.warning(f"现货腿追单次数超过限制, 不再追单")
-                            return
-                        
-                        if leg_spot.direction == Direction.BUY:
-                            chase_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
-
-                            price = self.get_price_safely(self.exchange, order.symbol_id, side='ask')
-                            chase_order = self.send_spot_order(
-                                client_id=chase_spot_client_id,
-                                exchange=self.exchange,
-                                symbol_id=order.symbol_id,
-                                volume=volume_remaining,
-                                price=price,
-                                order_type=OrderType.LIMIT,
-                                direction=leg_spot.direction
-                            )
-                            if chase_order is not None:
-                                order.put_leg('spot', chase_order)
-                        else:
-                            chase_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
-
-                            price = self.get_price_safely(self.exchange, order.symbol_id, side='bid')
-                            chase_order = self.send_spot_order(
-                                client_id=chase_spot_client_id,
-                                exchange=self.exchange,
-                                symbol_id=order.symbol_id,
-                                volume=volume_remaining,
-                                price=price,
-                                order_type=OrderType.LIMIT,
-                                direction=leg_spot.direction
-                            )
-                            if chase_order is not None:
-                                order.put_leg('spot', chase_order)
-
-                if isinstance(order, FundingRateArbitrageHedgeOrder) and leg_swap.status == OrderStatus.OPEN and leg_swap.volume_traded < leg_swap.volume:
-                    self.cancel_order(exchange=self.exchange_hedge, order=leg_swap) 
+                    self.cancel_order(exchange=self.exchange, order=leg_swap) 
 
                     if leg_swap.status != OrderStatus.CANCELLED:
                         Logger.warning(f"合约腿撤单失败. 订单状态应当为{OrderStatus.CANCELLED}, 当前状态为{leg_swap.status}")
                         return
 
-                    contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)   
+                    swap_inst_id = CryptoUtil.convert_symbol_to_contract(self.exchange, order.symbol_id)   
                     volume_remaining = leg_swap.volume_remaining
                     if volume_remaining > 0:    
-                        if len(order.leg_swap) > self.context.strategy_params.common_params.order_chase_times:
+                        if len(order.leg_swap) > self.strategy_params.execution_params.order_chase_times:
                             # TODO: 这里需要监控起来，比如发送邮件、拨打电话等，未来不影响效率，应该要使用异步任务来处理
                             Logger.warning(f"合约腿追单次数超过限制, 不再追单")
                             return
@@ -503,11 +446,11 @@ class FundingRateArbitrageExecuteManager():
                             # 为每个交易腿生成唯一的client_id
                             chase_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
 
-                            price = self.get_price_safely(self.exchange_hedge, contract_symbol, side='ask')
+                            price = self.get_price_safely(self.exchange, swap_inst_id, side='ask')
                             chase_order = self.send_swap_order(
                                 client_id=chase_swap_client_id,
-                                exchange=self.exchange_hedge,
-                                symbol_id=contract_symbol,
+                                exchange=self.exchange,
+                                symbol_id=swap_inst_id,
                                 volume=volume_remaining,
                                 price=price,
                                 order_type=OrderType.LIMIT,
@@ -520,11 +463,11 @@ class FundingRateArbitrageExecuteManager():
                             # 为每个交易腿生成唯一的client_id
                             chase_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
 
-                            price = self.get_price_safely(self.exchange_hedge, contract_symbol, side='bid')
+                            price = self.get_price_safely(self.exchange, swap_inst_id, side='bid')
                             chase_order = self.send_swap_order(
                                 client_id=chase_swap_client_id,
-                                exchange=self.exchange_hedge,
-                                symbol_id=contract_symbol,
+                                exchange=self.exchange,
+                                symbol_id=swap_inst_id,
                                 volume=volume_remaining,
                                 price=price,
                                 order_type=OrderType.LIMIT,
@@ -554,114 +497,31 @@ class FundingRateArbitrageExecuteManager():
         """
         try:
             # 计算现货和合约的成交差额
-            spot_order_filled = order.get_leg_volume_traded('spot') * (1 if order.leg_spot[-1].direction == Direction.BUY else -1)
-
-       
-            swap_order_filled = order.get_leg_volume_traded('swap') * (-1)
-            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)
+            spot_order_filled = order.get_leg_volume_traded('spot') 
+            swap_order_filled = order.get_leg_volume_traded('swap')
+            contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange, order.symbol_id)
             contract_size = self.perpetual_markets[contract_symbol]['contract_size']
             swap_order_filled_notional = swap_order_filled * contract_size
 
 
-            imbalance = spot_order_filled = swap_order_filled_notional
+            imbalance = spot_order_filled - swap_order_filled_notional
             
-            if abs(imbalance) <= self.context.strategy_params.common_params.order_imbalance_threshold:
+            if abs(imbalance) <= self.strategy_params.execution_params.order_imbalance_threshold:
                 return  # 差额很小，不需要处理
                 
-            if not isinstance(order, FundingRateArbitrageHedgeOrder):
-                # 跨交易所现货的两条腿，一买一卖
-                if imbalance > 0:
-                    # 买单多了，需要补充另一腿的卖出数量
-                    if order.is_imbalance_adjust_times_limit(self.context.strategy_params.common_params.imbalance_adjust_times):
-                        Logger.warning(f"残腿调整次数超过限制, 不再调整")
-                        return
-
-                    new_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
-                    
-                    if order.leg_spot_1[-1].direction == Direction.SELL:             
-                        price = self.get_price_safely(self.exchange_1, order.symbol_id, 'bid')
-                        new_order = self.send_spot_order(
-                            client_id=new_spot_client_id,
-                            exchange=self.exchange,
-                            symbol_id=order.symbol_id,
-                            volume=abs(imbalance),
-                            price=price,
-                            order_type=OrderType.LIMIT,
-                            direction=Direction.SELL
-                        )
-                        if new_order is not None:
-                            order.put_leg('spot_1', new_order)
-                    else:
-                        price = self.get_price_safely(self.exchange_2, order.symbol_id, 'bid')
-                        new_order = self.send_spot_order(
-                            client_id=new_spot_client_id,
-                            exchange=self.exchange,
-                            symbol_id=order.symbol_id,
-                            volume=abs(imbalance),
-                            price=price,
-                            order_type=OrderType.LIMIT,
-                            direction=Direction.SELL
-                        )
-                        if new_order is not None:
-                            order.put_leg('spot', new_order)
-
-                    order.imbalance_adjust_times += 1
-                    
-                    Logger.info(f"补充现货多单: {order.symbol_id}, 数量: {abs(imbalance)}")
-                    
-                else:
-                    # 卖单多了，需要补充另一腿的买入数量
-                    if order.is_imbalance_adjust_times_limit(self.context.strategy_params.common_params.imbalance_adjust_times):
-                        Logger.warning(f"残腿调整次数超过限制, 不再调整")
-                        return
-
-                    new_spot_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
-
-                    if order.leg_spot[-1].direction == Direction.BUY:
-                        price = self.get_price_safely(self.exchange, order.symbol_id, 'ask')
-                        new_order = self.send_spot_order(
-                            client_id=new_spot_client_id,
-                            exchange=self.exchange,
-                            symbol_id=order.symbol_id,
-                            volume=abs(imbalance),
-                            price=price,
-                            order_type=OrderType.LIMIT,
-                            direction=Direction.BUY
-                        )
-                        if new_order is not None:
-                            order.put_leg('spot', new_order)
-                    else:
-                        price = self.get_price_safely(self.exchange, order.symbol_id, 'ask')
-                        new_order = self.send_spot_order(
-                            client_id=new_spot_client_id,
-                            exchange=self.exchange,
-                            symbol_id=order.symbol_id,
-                            volume=abs(imbalance),
-                            price=price,
-                            order_type=OrderType.LIMIT,
-                            direction=Direction.BUY
-                        )   
-                        if new_order is not None:
-                            order.put_leg('spot', new_order)
-
-                    order.imbalance_adjust_times += 1
-
-                    Logger.info(f"补充现货空单: {order.symbol_id}, 数量: {abs(imbalance)}")
-            elif isinstance(order, FundingRateArbitrageHedgeOrder) and imbalance > 0:  
+            if imbalance > 0:  
                 # 现货多成交, 需要补充合约空单
 
-                if order.is_imbalance_adjust_times_limit(self.context.strategy_params.common_params.imbalance_adjust_times):
+                if order.is_imbalance_adjust_times_limit(self.strategy_params.execution_params.imbalance_adjust_times):
                     Logger.warning(f"残腿调整次数超过限制, 不再调整")
                     return
                 
                 new_swap_client_id = SerialnoUtil.create_serial_no(prefix='', length=20) 
 
-                contract_symbol = CryptoUtil.convert_symbol_to_contract(self.exchange_hedge, order.symbol_id)
-                contract_size = self.perpetual_markets[contract_symbol]['contract_size']
-                price = self.get_price_safely(self.exchange_hedge, contract_symbol, 'bid')
+                price = self.get_price_safely(self.exchange, contract_symbol, 'bid')
                 new_order = self.send_swap_order(
                     client_id=new_swap_client_id,
-                    exchange=self.exchange_hedge,
+                    exchange=self.exchange,
                     symbol_id=contract_symbol,
                     volume=abs(imbalance) / contract_size,
                     price=price,
@@ -675,10 +535,10 @@ class FundingRateArbitrageExecuteManager():
                 order.imbalance_adjust_times += 1
 
                 Logger.info(f"补充合约空单: {contract_symbol}, 数量: {abs(imbalance)}")
-            elif isinstance(order, FundingRateArbitrageHedgeOrder) and imbalance < 0:  
+            elif imbalance < 0:  
                 # 合约多成交, 需要补充现货多单
 
-                if order.is_imbalance_adjust_times_limit(self.context.strategy_params.common_params.imbalance_adjust_times):
+                if order.is_imbalance_adjust_times_limit(self.strategy_params.execution_params.imbalance_adjust_times):
                     Logger.warning(f"残腿调整次数超过限制, 不再调整")
                     return
 
@@ -733,25 +593,25 @@ class FundingRateArbitrageExecuteManager():
             self.event_engine.put_event(EventType.ON_CANCEL, order_data)
 
         # 先在活跃订单中查找并更新
-        for arb_id, arb_order in self.active_orders.items():
-            for leg_name, leg_order in arb_order.legs.items():
-                if leg_order.client_id == order_data.client_id or leg_order.order_id == order_data.order_id:
-                    leg_order.copy_from(order_data)
-                    # 推送更新后的订单数据到WebSocket
-                    self.push_order_to_websocket(leg_order)
-                    break
+        # for arb_id, arb_order in self.active_orders.items():
+        #     for leg_name, leg_order in arb_order.legs.items():
+        #         if leg_order.client_id == order_data.client_id or leg_order.order_id == order_data.order_id:
+        #             leg_order.copy_from(order_data)
+        #             # 推送更新后的订单数据到WebSocket
+        #             self.push_order_to_websocket(leg_order)
+        #             break
         
-        # 如果是仓位的一部分，更新仓位并推送
-        for symbol_id, position in self.position_holder.items():
-            # 检查是否需要更新仓位数据
-            updated = False
+        # # 如果是仓位的一部分，更新仓位并推送
+        # for symbol_id, position in self.position_holder.items():
+        #     # 检查是否需要更新仓位数据
+        #     updated = False
             
-            # 这里根据实际情况添加仓位更新逻辑
-            # 如果仓位有更新，则标记updated = True
+        #     # 这里根据实际情况添加仓位更新逻辑
+        #     # 如果仓位有更新，则标记updated = True
             
-            if updated:
-                # 推送更新后的仓位数据到WebSocket
-                self.push_position_to_websocket(position)
+        #     if updated:
+        #         # 推送更新后的仓位数据到WebSocket
+        #         self.push_position_to_websocket(position)
 
     def send_spot_order(
             self,
@@ -830,6 +690,10 @@ class FundingRateArbitrageExecuteManager():
                 pos_side = PositionSide.LONG
             else:
                 raise ValueError(f"无效的偏移量: {offset}")
+
+            # OKX永续合约不支持持仓方向?
+            if exchange.id == 'okx':
+                pos_side = PositionSide.NONE
             
             exchange.set_leverage(1, symbol_id)
                 
@@ -1186,116 +1050,116 @@ class FundingRateArbitrageExecuteManager():
         }
         return status_map.get(status, "unknown")
 
-def test_arbitrage_position_manager():
-    from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import setup_exchanges, load_pairs
+# def test_arbitrage_position_manager():
+#     from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import setup_exchanges, load_pairs
     
-    exchanges = setup_exchanges()
-    exchange_1 = exchanges['exchange_1']
-    exchange_2 = exchanges['exchange_2']
-    exchange_hedge = exchanges['exchange_hedge']
+#     exchanges = setup_exchanges()
+#     exchange_1 = exchanges['exchange_1']
+#     exchange_2 = exchanges['exchange_2']
+#     exchange_hedge = exchanges['exchange_hedge']
 
-    pairs = load_pairs()
-    # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
+#     pairs = load_pairs()
+#     # pairs = [pair for pair in pairs if pair['base'] == 'LSK']
 
 
-    # 初始化市场数据管理器
-    md = MarketDataService()
-    # 添加交易所
-    for exchange_id, exchange in exchanges.items():
-        md.add_exchange(exchange_id, exchange)
+#     # 初始化市场数据管理器
+#     md = MarketDataService()
+#     # 添加交易所
+#     for exchange_id, exchange in exchanges.items():
+#         md.add_exchange(exchange_id, exchange)
 
-    # 订阅行情数据
-    spot_symbols_to_watch = ['LSK/USDT']
-    swap_symbols_to_watch = ['LSK/USDT:USDT']
+#     # 订阅行情数据
+#     spot_symbols_to_watch = ['LSK/USDT']
+#     swap_symbols_to_watch = ['LSK/USDT:USDT']
     
-    # 订阅现货订单簿
-    for symbol in spot_symbols_to_watch:
-        md.subscribe_orderbook('exchange_1', symbol)
-        md.subscribe_orderbook('exchange_2', symbol)
+#     # 订阅现货订单簿
+#     for symbol in spot_symbols_to_watch:
+#         md.subscribe_orderbook('exchange_1', symbol)
+#         md.subscribe_orderbook('exchange_2', symbol)
         
 
-    # 订阅合约订单簿和资金费率
-    for symbol in swap_symbols_to_watch:
-        md.subscribe_orderbook('exchange_hedge', symbol)
-        md.subscribe_funding_rate('exchange_hedge', symbol)
+#     # 订阅合约订单簿和资金费率
+#     for symbol in swap_symbols_to_watch:
+#         md.subscribe_orderbook('exchange_hedge', symbol)
+#         md.subscribe_funding_rate('exchange_hedge', symbol)
     
-    # 启动市场数据订阅
-    md.start()
+#     # 启动市场数据订阅
+#     md.start()
 
 
-    max_retries = 10
-    attempt = 0
-    retry_delay = min(30, 2 ** 0)  # 指数退避，最大30秒
+#     max_retries = 10
+#     attempt = 0
+#     retry_delay = min(30, 2 ** 0)  # 指数退避，最大30秒
 
-    # 等待数据开始流入
-    Logger.info("等待行情数据开始流入...")
-    while True:
-        spot_orderbook_1 = md.get_orderbook('exchange_1', 'LSK/USDT')
-        spot_orderbook_2 = md.get_orderbook('exchange_2', 'LSK/USDT')
-        swap_orderbook = md.get_orderbook('exchange_hedge', 'LSK/USDT:USDT')
+#     # 等待数据开始流入
+#     Logger.info("等待行情数据开始流入...")
+#     while True:
+#         spot_orderbook_1 = md.get_orderbook('exchange_1', 'LSK/USDT')
+#         spot_orderbook_2 = md.get_orderbook('exchange_2', 'LSK/USDT')
+#         swap_orderbook = md.get_orderbook('exchange_hedge', 'LSK/USDT:USDT')
         
-        # 检查行情数据是否有效和新鲜
-        if (not spot_orderbook_1['asks'] or 
-            not spot_orderbook_2['asks'] or 
-            not swap_orderbook['bids'] or
-            not md.is_data_fresh('orderbook', 'exchange_1', 'LSK/USDT') or
-            not md.is_data_fresh('orderbook', 'exchange_2', 'LSK/USDT') or
-            not md.is_data_fresh('orderbook', 'exchange_hedge', 'LSK/USDT:USDT')):
+#         # 检查行情数据是否有效和新鲜
+#         if (not spot_orderbook_1['asks'] or 
+#             not spot_orderbook_2['asks'] or 
+#             not swap_orderbook['bids'] or
+#             not md.is_data_fresh('orderbook', 'exchange_1', 'LSK/USDT') or
+#             not md.is_data_fresh('orderbook', 'exchange_2', 'LSK/USDT') or
+#             not md.is_data_fresh('orderbook', 'exchange_hedge', 'LSK/USDT:USDT')):
             
-            Logger.warning(f"行情数据不完整或不新鲜, 尝试 {attempt + 1}/{max_retries}")
+#             Logger.warning(f"行情数据不完整或不新鲜, 尝试 {attempt + 1}/{max_retries}")
 
-            retry_delay = min(30, 2 ** (attempt + 1))  # 指数退避，最大30秒
-            time.sleep(retry_delay) 
-            attempt += 1
-            if attempt >= max_retries:
-                Logger.error("行情数据获取失败，已达到最大重试次数")
-                exit(0)
+#             retry_delay = min(30, 2 ** (attempt + 1))  # 指数退避，最大30秒
+#             time.sleep(retry_delay) 
+#             attempt += 1
+#             if attempt >= max_retries:
+#                 Logger.error("行情数据获取失败，已达到最大重试次数")
+#                 exit(0)
 
         
-        else:
-            break
+#         else:
+#             break
     
-    context = Context.get_instance()
-    context.market_data_service = md
+#     context = Context.get_instance()
+#     context.market_data_service = md
     
-    from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import StrategyParams
-    strategy_params = StrategyParams.from_settings()
-    context.strategy_params = strategy_params
+#     from btc_model.strategy.exchange_arbitrage.exchange_arbitrage_strategy import StrategyParams
+#     strategy_params = StrategyParams.from_settings()
+#     context.strategy_params = strategy_params
 
-    position_manager = FundingRateArbitragePositionManager(
-        exchange=exchange_hedge,
-        context=context
-    )
+#     position_manager = FundingRateArbitragePositionManager(
+#         exchange=exchange_hedge,
+#         context=context
+#     )
 
-    position_manager.create_arbitrage_position(symbol_id='LSK/USDT', volume=10)
+#     position_manager.create_arbitrage_position(symbol_id='LSK/USDT', volume=10)
 
 
-    try:
-        while True:
-            arbitrage_position = position_manager.get_arbitrage_position('LSK/USDT')
-            if arbitrage_position is not None and \
-                arbitrage_position.spot_1_position > 0 and \
-                    arbitrage_position.spot_2_position > 0 and \
-                        arbitrage_position.swap_position > 0 and \
-                            abs(arbitrage_position.net_position) < 1:
-                position_manager.execute_arbitrage(symbol_id='LSK/USDT',
-                                                   volume=10,
-                                                   exchange_pair=(exchange_1, exchange_2)
-                                                   )
+#     try:
+#         while True:
+#             arbitrage_position = position_manager.get_arbitrage_position('LSK/USDT')
+#             if arbitrage_position is not None and \
+#                 arbitrage_position.spot_1_position > 0 and \
+#                     arbitrage_position.spot_2_position > 0 and \
+#                         arbitrage_position.swap_position > 0 and \
+#                             abs(arbitrage_position.net_position) < 1:
+#                 position_manager.execute_arbitrage(symbol_id='LSK/USDT',
+#                                                    volume=10,
+#                                                    exchange_pair=(exchange_1, exchange_2)
+#                                                    )
                 
                 
-            time.sleep(1)
+#             time.sleep(1)
             
-    except KeyboardInterrupt:
-        Logger.info("程序被用户中断")
-    finally:
-        # 停止市场数据订阅
-        md.stop()
-        Logger.info("程序已退出")
+#     except KeyboardInterrupt:
+#         Logger.info("程序被用户中断")
+#     finally:
+#         # 停止市场数据订阅
+#         md.stop()
+#         Logger.info("程序已退出")
 
 
-if __name__ == '__main__':
-    test_arbitrage_position_manager()
+# if __name__ == '__main__':
+#     test_arbitrage_position_manager()
     
     
-    print('-------------------------------------------------------------------------')
+#     print('-------------------------------------------------------------------------')

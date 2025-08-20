@@ -7,14 +7,12 @@ from strategy_params import RiskControlParams
 # from alert_service import AlertService     # 假设你有一个发送告警的模块
 
 from trade.funding_rate_arbitrage_position_manager import FundingRateArbitragePositionManager # 假设你已经实现了这个类
-from trade.funding_rate_arbitrage_execute_manager import FundingRateArbitrageExecuteManager # 假设你已经实现了这个类
 
 class RiskManager:
     def __init__(self,
                  exchange_connector: ExchangeConnector,
                  data_processor: DataProcessor,
                  position_manager: FundingRateArbitragePositionManager,
-                 execution_manager: FundingRateArbitrageExecuteManager,
                  # alert_service: AlertService, # 可选
                  risk_control_params: RiskControlParams): # 从配置文件加载风险参数
         """
@@ -30,7 +28,7 @@ class RiskManager:
         self.exchange_connector = exchange_connector
         self.data_processor = data_processor
         self.position_manager = position_manager
-        self.execution_manager = execution_manager
+   
         # self.alert_service = alert_service # 可选
 
         # 从配置加载风险阈值

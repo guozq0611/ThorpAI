@@ -20,7 +20,6 @@ from btc_model.setting.setting import get_settings
 from btc_model.core.util.crypto_util import CryptoUtil
 from btc_model.market.market_data_service import MarketDataService
 from btc_model.core.common.context import Context
-from btc_model.trade.arbitrage_position_manager import ArbitragePositionManager
 from btc_model.core.util.crypto_util import CryptoUtil
 
 from btc_model.core.wrapper.db_wrapper import DBWrapper
@@ -37,6 +36,7 @@ from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_exec
 from btc_model.strategy.funding_rate_arbitrage.trade.funding_rate_arbitrage_position_manager import FundingRateArbitragePositionManager
 
 
+
 class FundingRateArbitrageStrategy:
     """
     跨交易所套利策略
@@ -46,6 +46,7 @@ class FundingRateArbitrageStrategy:
                  symbol_id: str,
                  spot_inst_id: str,
                  swap_inst_id: str,
+                 swap_contract_size: float,
                  exchange_connector: ExchangeConnector,
                  data_processor: DataProcessor,
                  position_manager: FundingRateArbitragePositionManager,
@@ -69,7 +70,7 @@ class FundingRateArbitrageStrategy:
         self.symbol_id = symbol_id
         self.spot_inst_id = spot_inst_id
         self.swap_inst_id = swap_inst_id
-
+        self.swap_contract_size = swap_contract_size
         self.exchange_connector = exchange_connector
         self.data_processor = data_processor
         self.position_manager = position_manager
@@ -115,7 +116,7 @@ class FundingRateArbitrageStrategy:
         self.check_open_signal()
 
         # 2. Check for close signals (Close signals can also be triggered directly by RiskManager)
-        self.check_close_signal()
+        #self.check_close_signal()
 
         Logger.debug("Opportunity evaluation completed.")
 
@@ -123,6 +124,9 @@ class FundingRateArbitrageStrategy:
         """
         检查是否有开仓信号，满足条件后、执行交易前才记录信号
         """
+        global current_concurrent_positions
+        global lock
+        
         # 获取现货和永续合约的价格数据
         spot_bbo = self.market_data_service.get_bbo(self.exchange_id, self.spot_inst_id)
         if spot_bbo is None or spot_bbo['timestamp'] == 0:
@@ -131,8 +135,7 @@ class FundingRateArbitrageStrategy:
         swap_bbo = self.market_data_service.get_bbo(self.exchange_id, self.swap_inst_id)
         if swap_bbo is None or swap_bbo['timestamp'] == 0:
             return False
-        
-        
+          
         # 获取当前资金费率
         current_funding_rate = self.market_data_service.get_funding_rate(self.exchange_id, self.swap_inst_id)
         if current_funding_rate is None or current_funding_rate['timestamp'] == 0:
@@ -161,24 +164,25 @@ class FundingRateArbitrageStrategy:
                 Logger.info(f"交易对 {self.spot_inst_id}/{self.swap_inst_id} 在黑名单中，不开仓")
                 return False
             
+            # 检查是否超过活跃套利对数量
+            if self.position_manager.get_concurrent_positions_count() >= self.strategy_params.common_params.max_concurrent_positions:
+                Logger.info(f"超过活跃套利对数量，不开仓")
+                return False
+            
             # 检查是否已有该交易对的头寸
-            existing_position = self.position_manager.get_position_by_symbols(self.spot_inst_id, self.swap_inst_id)
+            existing_position = self.position_manager.get_active_position(self.exchange_id, self.symbol_id)
             if existing_position:
                 Logger.info(f"已存在交易对 {self.spot_inst_id}/{self.swap_inst_id} 的头寸，不重复开仓")
                 return False
             
             # 计算头寸大小
-            available_capital = self.get_available_capital()
+            available_capital = self.exchange_connector.get_currency_balance('USDT', 'free')
             position_size = self.calculate_position_size(available_capital, spot_ask)
             
             if position_size <= 0:
                 Logger.info("计算的头寸大小为零或负数，不开仓")
                 return False
             
-            active_position_count = self.position_manager.get_active_position_by_symbol_id(symbol_id=self.symbol_id)
-            if active_position_count >= self.strategy_params.common_params.max_open_positions:
-                Logger.info(f"当前交易对 {self.symbol_id} 已有 {active_position_count} 个活跃持仓，不开仓")
-                return False
                 
             # 满足开仓条件，准备信号数据
             exchange_id = self.exchange_id
@@ -193,10 +197,10 @@ class FundingRateArbitrageStrategy:
                 signal_date, 
                 signal_time, 
                 exchange_id, 
-                base_currency, 
-                quote_currency, 
+                symbol_id,
                 spot_inst_id, 
                 swap_inst_id, 
+                swap_contract_size,
                 current_funding_rate, 
                 annualized_funding_rate, 
                 spot_bid, 
@@ -215,10 +219,10 @@ class FundingRateArbitrageStrategy:
                 :signal_date, 
                 :signal_time, 
                 :exchange_id, 
-                :base_currency, 
-                :quote_currency, 
+                :symbol_id,
                 :spot_inst_id, 
                 :swap_inst_id, 
+                :swap_contract_size,
                 :current_funding_rate, 
                 :annualized_funding_rate, 
                 :spot_bid, 
@@ -240,10 +244,10 @@ class FundingRateArbitrageStrategy:
                 'signal_date': now.date(),
                 'signal_time': now.time(),
                 'exchange_id': exchange_id,
-                'base_currency': base_currency,
-                'quote_currency': quote_currency,
+                'symbol_id': self.symbol_id,
                 'spot_inst_id': self.spot_inst_id,
                 'swap_inst_id': self.swap_inst_id,
+                'swap_contract_size': self.swap_contract_size,
                 'current_funding_rate': current_funding_rate,
                 'annualized_funding_rate': annualized_funding_rate,
                 'spot_bid': spot_bbo['bid_price'],
@@ -266,26 +270,69 @@ class FundingRateArbitrageStrategy:
                 Logger.warning(f"记录开仓信号失败，跳过开仓")
                 return False
             
-            symbol_id = f"{self.spot_inst_id}/{self.swap_inst_id}"
-            # self.trigger_open_position(signal_id, params)
-            self.execution_manager.create_arbitrage_position(
-                symbol_id, 
-                position_size
-                )
+      
+            # # self.trigger_open_position(signal_id, params)
+            # self.execution_manager.create_arbitrage_position(
+            #     self.symbol_id, 
+            #     position_size
+            #     )
             
             Logger.info(f"记录开仓信号 ID: {signal_id}, 交易对: {self.spot_inst_id}/{self.swap_inst_id}")
             
             # 执行交易逻辑
             #self.execute_open_position(self.spot_inst_id, self.swap_inst_id, spot_ask, swap_bid, position_size)
+            self.execute_open_position(signal_id, params, position_size)
             return True
         
         return False
     
-    def trigger_open_position(self, signal_id: int, signal_data: dict):
+    def execute_open_position(self, signal_id: int, signal_data: dict, position_size: float):
         """
         触发开仓交易
         """
-        self.execution_manager.trigger_open_position(signal_id, signal_data)
+        position_dict = {
+            "exchange_id": signal_data['exchange_id'],
+            "symbol_id": signal_data['symbol_id'],
+            "spot_inst_id": signal_data['spot_inst_id'],
+            "swap_inst_id": signal_data['swap_inst_id'],
+            "swap_contract_size": signal_data['swap_contract_size'],
+            "arbitrage_position": position_size,
+            "spot_position": 0,
+            "swap_position": 0,
+            "status": 'OPENING',
+        }
+
+        position_id = self.position_manager.add_position(position_dict)
+        if position_id is None:
+            Logger.warning(f"添加持仓失败，跳过开仓")
+            return
+
+
+        arbitrage_order = self.execution_manager.create_arbitrage_position(
+            position_id=position_id,
+            exchange_id=position_dict['exchange_id'],
+            symbol_id=position_dict['symbol_id'], 
+            volume=position_size
+            )
+        
+        if arbitrage_order is None:
+            Logger.warning(f"创建套利订单失败，跳过开仓")
+            return
+
+        position_dict['position_id'] = position_id
+        position_dict['status'] = 'OPENING'
+        position_dict['spot_position'] = arbitrage_order.get_leg_volume_traded('spot')
+        position_dict['swap_position'] = arbitrage_order.get_leg_volume_traded('swap')
+        position_dict['open_basis'] = signal_data['basis']
+        position_dict['total_funding_collected'] = 0
+        position_dict['open_time'] = datetime.now()
+        # 更新仓位状态
+        self.position_manager.update_position(position_dict)
+        
+        Logger.info(f"创建套利订单成功，订单ID: {arbitrage_order.order_id}")
+            
+        
+       
 
     def check_close_signal(self):
         """检查是否有平仓信号，满足条件后、执行交易前才记录信号"""
@@ -316,7 +363,7 @@ class FundingRateArbitrageStrategy:
         basis = swap_ask - spot_bid
         basis_ratio = (basis / spot_bid) * 100
         
-        position = self.position_manager.get_position_by_symbols(self.spot_inst_id, self.swap_inst_id)
+        position = self.position_manager.get_active_position(self.exchange_id, self.symbol_id)
 
         if position is None:
             Logger.warning(f"无法获取头寸信息，跳过平仓检查")
@@ -484,15 +531,15 @@ class FundingRateArbitrageStrategy:
             max_concurrent_positions = self.strategy_params.common_params.max_concurrent_positions
             
             # 当前活跃头寸数量
-            active_positions_count = self.position_manager.get_active_positions_count()
+            concurrent_positions_count = self.position_manager.get_concurrent_positions_count()
             
             # 如果已达到最大头寸数量，则不开新仓
-            if active_positions_count >= max_concurrent_positions:
-                Logger.warning(f"已达到最大头寸数量 ({active_positions_count}/{max_concurrent_positions})，不开新仓")
+            if concurrent_positions_count >= max_concurrent_positions:
+                Logger.warning(f"已达到最大头寸数量 ({concurrent_positions_count}/{max_concurrent_positions})，不开新仓")
                 return 0.0
             
             # 考虑当前活跃头寸数，计算此次可用资金
-            remaining_positions = max_concurrent_positions - active_positions_count
+            remaining_positions = max_concurrent_positions - concurrent_positions_count
             per_position_capital = available_capital / max(1, remaining_positions)
             
             # 确保不超过最大单笔头寸限制

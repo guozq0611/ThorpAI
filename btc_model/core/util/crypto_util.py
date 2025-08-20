@@ -32,7 +32,8 @@ DIRECTION_FROM_CCXT: dict[str, Direction] = {v: k for k, v in DIRECTION_2CCXT.it
 POSITION_SIDE_2CCXT: dict[PositionSide, str] = {
     PositionSide.LONG: "long",
     PositionSide.SHORT: "short",
-    PositionSide.NET: "net"
+    PositionSide.NET: "net",
+    PositionSide.NONE: ""
 }
 POSITION_SIDE_FROM_CCXT: dict[str, PositionSide] = {v: k for k, v in POSITION_SIDE_2CCXT.items()}
 
@@ -1558,9 +1559,9 @@ class CryptoUtil:
         dt = None
         if "datetime" in exchange_order and exchange_order["datetime"]:
             # 将ISO格式的UTC时间转换为datetime对
-            utc_dt = datetime.fromisoformat(exchange_order["datetime"].replace("Z", "+00:00"))
+            utc_dt = datetime.datetime.fromisoformat(exchange_order["datetime"].replace("Z", "+00:00"))
             # 转换为本地时间
-            dt = utc_dt.astimezone(datetime.now().astimezone().tzinfo)
+            dt = utc_dt.astimezone(datetime.datetime.now().astimezone().tzinfo)
         
         
         

@@ -137,20 +137,46 @@ CREATE TABLE IF NOT EXISTS cross_exchange_arbitrage_position (
     UNIQUE KEY (symbol_id)
 ) COMMENT='跨交易所套利持仓表';
 
--- 账户持仓
-CREATE TABLE IF NOT EXISTS account_position (
+-- 账户资产(持有币种)
+CREATE TABLE IF NOT EXISTS balance (
     id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
     exchange_id VARCHAR(32) NOT NULL COMMENT '交易所',
-    account_id VARCHAR(32) NOT NULL COMMENT '账户ID',
     symbol_id VARCHAR(32) NOT NULL COMMENT '标的代码',
-    position_side VARCHAR(32) NOT NULL COMMENT '持仓方向',
-    position DECIMAL(18, 4) NOT NULL COMMENT '持仓数量',
+    total DECIMAL(18, 4) NOT NULL COMMENT '总资产',
+    available DECIMAL(18, 4) NOT NULL COMMENT '可用资产',
+    frozen DECIMAL(18, 4) NOT NULL COMMENT '冻结资产',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY (account_id, symbol_id)
-) COMMENT='账户持仓表';
+    UNIQUE KEY (exchange_id, account_id, symbol_id)
+) COMMENT='账户资产表';
 
-
+-- 持仓表(合约持仓)
+CREATE TABLE IF NOT EXISTS position (
+    `id` INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
+    `exchange_id` VARCHAR(32) NOT NULL COMMENT '交易所ID',
+    `symbol_id` VARCHAR(32) NOT NULL COMMENT '交易对ID',
+    `notional` DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '名义价值(美元)',
+    `margin_mode` VARCHAR(16) NOT NULL COMMENT '保证金模式(cross/isolated)',
+    `liquidation_price` DECIMAL(20,8) COMMENT '强平价格',
+    `entry_price` DECIMAL(20,8) NOT NULL COMMENT '开仓均价',
+    `unrealized_pnl` DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '未实现盈亏',
+    `realized_pnl` DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '已实现盈亏',
+    `pnl_percentage` DECIMAL(10,4) COMMENT '收益百分比',
+    `contracts` DECIMAL(20,8) NOT NULL COMMENT '合约数量',
+    `contract_size` DECIMAL(20,8) NOT NULL COMMENT '合约面值',
+    `mark_price` DECIMAL(20,8) NOT NULL COMMENT '标记价格',
+    `side` VARCHAR(16) NOT NULL COMMENT '持仓方向(long/short)',
+    `maintenance_margin` DECIMAL(20,8) NOT NULL COMMENT '维持保证金',
+    `maintenance_margin_percentage` DECIMAL(10,4) NOT NULL COMMENT '维持保证金比例',
+    `collateral` DECIMAL(20,8) NOT NULL COMMENT '抵押品价值',
+    `initial_margin` DECIMAL(20,8) NOT NULL COMMENT '初始保证金',
+    `initial_margin_percentage` DECIMAL(10,4) NOT NULL COMMENT '初始保证金比例',
+    `leverage` INT NOT NULL COMMENT '杠杆倍数',
+    `margin_ratio` DECIMAL(10,4) NOT NULL COMMENT '保证金率',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY (exchange_id, symbol_id)
+) COMMENT='持仓表';
 
 
 -- 存储资金费率套利策略使用的交易对白名单信息
@@ -212,27 +238,25 @@ CREATE TABLE IF NOT EXISTS `funding_rate_basis_summary` (
 
 
 -- 资金费率套利持仓
-CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_positions (
+CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_position (
     id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
-    account_id VARCHAR(32) NOT NULL COMMENT '账户ID',
     exchange_id VARCHAR(32) NOT NULL COMMENT '交易所ID',
-    base_currency VARCHAR(10) NOt NULL COMMENT '基础货币',
-    quote_currency VARCHAR(10) NOt NULL COMMENT '计价货币',
+    symbol_id VARCHAR(32) NOT NULL COMMENT '交易对代码',
+    -- 交易对信息
     spot_inst_id VARCHAR(50) NOT NULL COMMENT '现货交易对ID',
     swap_inst_id VARCHAR(50) NOT NULL COMMENT '永续合约交易对ID',
-    -- 现货持仓信息
-    spot_position DECIMAL(18, 4) NOT NULL COMMENT '现货持仓数量',
-    spot_frozen DECIMAL(18, 4) NOT NULL COMMENT '现货冻结数量',
-    -- 永续合约持仓信息
-    swap_position DECIMAL(18, 4) NOT NULL COMMENT '永续合约持仓数量',
-    swap_frozen DECIMAL(18, 4) NOT NULL COMMENT '永续合约冻结数量',
+    swap_contract_size DECIMAL(18, 4) NOT NULL COMMENT '永续合约乘数',
+    -- 持仓信息
+    arbitrage_position DECIMAL(18, 4) NOT NULL DEFAULT 0 COMMENT '套利头寸',
+    spot_position DECIMAL(18, 4) NOT NULL DEFAULT 0 COMMENT '现货持仓数量',  
+    swap_position DECIMAL(18, 4) NOT NULL DEFAULT 0 COMMENT '永续持仓数量',
     -- 持仓状态
-    status VARCHAR(32) NOT NULL DEFAULT 'holding' COMMENT '持仓状态（holding: 持有中, closing: 平仓中, closed: 已平仓）',
+    status VARCHAR(32) NOT NULL DEFAULT 'OPENING' COMMENT '持仓状态(OPENING: 正在开仓, FAILED: 开仓失败, HOLDING: 持有中, CLOSING: 平仓中, CLOSED: 已平仓)',
     -- 时间戳
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     -- 唯一索引（账户+现货+永续交易对）
-    UNIQUE KEY (account_id, exchange_id, base_currency, quote_currency)
+    UNIQUE KEY (exchange_id, symbol_id)
 ) COMMENT='资金费率套利持仓表';
 
 
@@ -242,12 +266,11 @@ CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_signal (
     id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键ID',
     signal_date DATE NOT NULL COMMENT '信号日期',
     signal_time TIME NOT NULL COMMENT '信号时间',
-    exchange_id VARCHAR(32) NOT NULL COMMENT '交易所ID（关联白名单）',
-    base_currency VARCHAR(10) NOT NULL COMMENT '基础货币（如BTC）',
-    quote_currency VARCHAR(10) NOT NULL COMMENT '计价货币（如USDT）',
-
-    spot_inst_id VARCHAR(50) NOT NULL COMMENT '现货交易对ID（关联白名单）',
-    swap_inst_id VARCHAR(50) NOT NULL COMMENT '永续合约交易对ID（关联白名单）',
+    exchange_id VARCHAR(32) NOT NULL COMMENT '交易所ID',
+    symbol_id VARCHAR(32) NOT NULL COMMENT '货币对代码（如BTC/USDT）',
+    spot_inst_id VARCHAR(50) NOT NULL COMMENT '现货交易对ID',
+    swap_inst_id VARCHAR(50) NOT NULL COMMENT '永续合约交易对ID',
+    swap_contract_size DECIMAL(18, 4) NOT NULL COMMENT '永续合约乘数',
     
     -- 资金费率核心指标
     current_funding_rate DECIMAL(10, 6) NOT NULL COMMENT '当前资金费率（原始值，如0.0001表示0.01%）',
@@ -276,7 +299,7 @@ CREATE TABLE IF NOT EXISTS funding_rate_arbitrage_signal (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
     
     -- 唯一索引（同一时间同一交易对仅一条信号）
-    UNIQUE KEY (signal_date, signal_time, exchange_id, base_currency, quote_currency)
+    UNIQUE KEY (signal_date, signal_time, exchange_id, symbol_id)
 ) COMMENT='资金费率套利信号表';
 
 

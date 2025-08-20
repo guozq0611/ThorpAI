@@ -41,13 +41,7 @@ class StrategyRunner:
             db_wrapper=DBWrapper.get_instance()
             )
         
-        
-        self.execution_manager = FundingRateArbitrageExecuteManager(
-            exchange=self.exchange_connector.exchange,
-            market_data_service=self.market_data_service,
-            service_manager=service_manager
-            )
-          
+             
         self.whitelist_manager = FundingRateWhitelistManager(
             db_wrapper=DBWrapper.get_instance(),
             websocket_service=service_manager.get_websocket_service()
@@ -61,30 +55,28 @@ class StrategyRunner:
         self.market_data_service.start()
         self.service_manager = service_manager
 
-        # 初始化套利仓位管理器
-        self.position_manager = FundingRateArbitragePositionManager(
-            exchange_connector=self.exchange_connector,
-            db_wrapper=DBWrapper.get_instance()
-        )
-  
+        self.execution_manager = FundingRateArbitrageExecuteManager(
+            strategy_params=self.strategy_params,
+            exchange=self.exchange_connector.exchange,
+            market_data_service=self.market_data_service,
+            position_manager=self.position_manager,
+            service_manager=service_manager
+            )
         
         self.websocket_service: WebSocketService = self.service_manager.get_websocket_service()
-
 
         spot_symbols = self.market_data_service.get_spot_symbols('okx')
         swap_symbols = self.market_data_service.get_swap_symbols('okx')
   
-
         self.strategy_list = []
         for white_list in self.white_list:
             spot_inst_id = white_list['spot_inst_id']
             swap_inst_id = white_list['swap_inst_id']
+            swap_contract_size = self.exchange_connector.exchange.markets[swap_inst_id].get('contractSize', 1)
 
             if spot_inst_id not in spot_symbols or swap_inst_id not in swap_symbols:
                 Logger.warning(f"币种 {spot_inst_id} 或 {swap_inst_id} 不在当前交易所，跳过策略初始化")
                 continue
-
-
 
             self.data_processor = DataProcessor(
                 exchange_connector=self.exchange_connector,
@@ -96,15 +88,15 @@ class StrategyRunner:
                 exchange_connector=self.exchange_connector,
                 data_processor=self.data_processor,
                 position_manager=self.position_manager,
-                execution_manager=self.execution_manager,
                 risk_control_params=self.strategy_params.risk_control_params
             )
 
             strategy = FundingRateArbitrageStrategy(
                 exchange_id='okx',
-                symbol_id=f"{spot_inst_id}/{swap_inst_id}",
+                symbol_id=spot_inst_id,
                 spot_inst_id=spot_inst_id,
                 swap_inst_id=swap_inst_id,
+                swap_contract_size=swap_contract_size,
                 exchange_connector=self.exchange_connector,
                 data_processor=self.data_processor,
                 position_manager=self.position_manager,

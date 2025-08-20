@@ -59,7 +59,7 @@ class ArbitragePositionManager(PositionManager):
 
         # 当前正在交易中的套利仓位，key为symbol_id；当仓位建好后，才能进行后续的现货一买一卖
         self.position_holder: Dict[str, ArbitragePosition] = {}
-
+       
         self.lock = threading.Lock()
         self._start_monitor()
         
@@ -82,7 +82,7 @@ class ArbitragePositionManager(PositionManager):
             if self.active_symbol_ids[symbol_id] > 0:
                 Logger.warning(f"已存在正在进行的套利仓位, 不创建新仓位: {symbol_id}")
                 return None
-            
+
             if symbol_id not in self.position_holder:
                 self.position_holder[symbol_id] = ArbitragePosition(symbol_id, self.exchange_1, self.exchange_2, self.exchange_hedge)
             # 生成一个本地订单ID（用于套利整体）
@@ -171,7 +171,7 @@ class ArbitragePositionManager(PositionManager):
                 if spot_price_1 == 0 or spot_price_2 == 0 or swap_price == 0:
                     Logger.warning(f"检测到行情异常, 不创建套利仓位: {symbol_id}")
                     return None
-                
+
                 # 记录行情数据用于日志
                 Logger.info(
                     f"获取行情成功 | "
@@ -342,7 +342,7 @@ class ArbitragePositionManager(PositionManager):
        
             self.active_orders[arb_order_id] = arbitrage_order
             self.active_symbol_ids[symbol_id] += 1
-                
+                    
 
             try:
                 price_1 = self.get_price_safely(self.exchange_1, symbol_id, side='asks' if leg_1_direction == Direction.BUY else 'bids', position=0)
@@ -583,7 +583,7 @@ class ArbitragePositionManager(PositionManager):
                 else:
                     leg_spot_1, leg_spot_2 = order.get_last_leg()
 
-                # 撤销未完成的订单
+            # 撤销未完成的订单
                 if leg_spot_1.status == OrderStatus.OPEN and leg_spot_1.volume_traded < leg_spot_1.volume:
                     self.cancel_order(exchange=self.exchange_1, order=leg_spot_1)
 
@@ -726,7 +726,7 @@ class ArbitragePositionManager(PositionManager):
                             if chase_order is not None:
                                 order.put_leg('swap', chase_order)  
 
-                    
+                
         except Exception as e:
             Logger.error(f"撤单调整失败: {e}")
             Logger.error(traceback.format_exc())
@@ -757,7 +757,7 @@ class ArbitragePositionManager(PositionManager):
             else:
                 swap_order_filled = 0
                 swap_order_filled_notional = 0
-
+                
             imbalance = spot_order_1_filled + spot_order_2_filled + swap_order_filled_notional
             
             if abs(imbalance) <= self.context.strategy_params.common_params.order_imbalance_threshold:

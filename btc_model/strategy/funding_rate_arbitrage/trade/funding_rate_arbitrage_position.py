@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 import threading
 from datetime import datetime, timedelta
 import time
@@ -141,28 +141,35 @@ class FundingRateArbitragePosition():
     """
     def __init__(self, 
                  position_id: int,
+                 exchange_id: str,
                  symbol_id: str,
                  spot_inst_id: str, 
                  swap_inst_id: str, 
                  swap_contract_size: float,
-                 exchange: Exchange,
-                 open_time: datetime
+                 arbitrage_position: float,
+                 spot_position: float,
+                 swap_position: float,
+                 status: str
                  ):
         self.position_id = position_id
         self.symbol_id = symbol_id
+        self.exchange_id = exchange_id
         self.spot_inst_id = spot_inst_id
         self.swap_inst_id = swap_inst_id
         self.swap_contract_size = swap_contract_size
-        self.exchange: Exchange = exchange
 
+        self.arbitrage_position = arbitrage_position
+        self.spot_position = spot_position
+        self.swap_position = swap_position
 
-        self.open_time = open_time # 开仓时间戳
-        self.status = 'OPENING' # 'OPENING', 'OPENED', 'CLOSING', 'CLOSED', 'ERROR'
+        self.status = status # 'OPENING', 'HOLDING', 'CLOSING', 'CLOSED', 'FAILED'
 
-        # 现货腿
-        self.leg_spot: PositionData = PositionData(spot_inst_id, exchange, PositionSide.NET)
-        # 合约腿
-        self.leg_swap: PositionData = PositionData(swap_inst_id, exchange, PositionSide.SHORT, volume_multiple=swap_contract_size)
+        self.open_time = datetime.now() # 开仓时间戳
+      
+        # # 现货腿
+        # self.leg_spot: PositionData = PositionData(spot_inst_id, self.exchange, PositionSide.NET)
+        # # 合约腿
+        # self.leg_swap: PositionData = PositionData(swap_inst_id, self.exchange, PositionSide.SHORT, volume_multiple=swap_contract_size)
 
         self.open_basis = 0.0 # 开仓时的基差 (Swap Open Price - Spot Open Price)
         self.total_funding_collected = 0.0 # 累计收到的资金费用
@@ -175,64 +182,76 @@ class FundingRateArbitragePosition():
 
         self.lock = threading.Lock()
 
-    def update_position(self, leg_type: str, position_data: PositionData) -> None:
-        """更新仓位"""
+    def update_position(self, update_data: Dict) -> None:
+        """
+        更新仓位信息
+        
+        Args:
+            update_data: 包含要更新的字段和值的字典
+        """
         with self.lock:
-            if leg_type == "spot":
-                self.leg_spot.copy_from(position_data)
-            elif leg_type == "swap":
-                self.leg_swap.copy_from(position_data)
+            self.spot_position = update_data.get('spot_position', self.spot_position)
+            self.swap_position = update_data.get('swap_position', self.swap_position)
+            self.status = update_data.get('status', self.status)
+            self.open_time = update_data.get('open_time', self.open_time)
+            self.open_basis = update_data.get('open_basis', self.open_basis)
+            self.total_funding_collected = update_data.get('total_funding_collected', self.total_funding_collected)
+            self.close_time = update_data.get('close_time', self.close_time)
+            self.close_basis = update_data.get('close_basis', self.close_basis)
+            self.total_pnl = update_data.get('total_pnl', self.total_pnl)
+            self.update_time = datetime.now()
 
-    def get_position(self) -> tuple[PositionData, PositionData, PositionData]:
-        """获取仓位"""
-        with self.lock:
-            return self.leg_spot, self.leg_swap
 
     @property
     def net_position(self) -> float:
         """净仓位"""
         with self.lock:
-            return self.leg_spot.volume - self.leg_swap.volume
+            return self.spot_position - self.swap_position
 
-    @property
-    def spot_position(self) -> float:
-        """现货1仓位"""
-        with self.lock:
-            return self.leg_spot.volume
-        
-    @spot_position.setter
-    def spot_position(self, value: float):
-        with self.lock:
-            self.leg_spot.volume = value
-
-    @property
-    def swap_position(self) -> float:
-        """合约仓位"""
-        with self.lock:
-            return self.leg_swap.volume
-
-    @swap_position.setter
-    def swap_position(self, value: float):
-        with self.lock:
-            self.leg_swap.volume = value
-
+  
     @property
     def swap_position_notional(self) -> float:
         """合约仓位价值"""
         with self.lock:
-            return self.leg_swap.volume * self.leg_swap.volume_multiple
+            return self.swap_position * self.swap_contract_size
         
-    @staticmethod   
-    def from_dict(data: Dict) -> 'FundingRateArbitragePosition':
+
+    def from_dict(self, data: Dict):
         """从字典重建 FundingRateArbitragePosition 对象"""
 
-        position = FundingRateArbitragePosition(
-            position_id=data.get('position_id', 0),
-            spot_inst_id=data.get('spot_inst_id', ''),
-            swap_inst_id=data.get('swap_inst_id', ''),
-            exchange=data.get('exchange', Exchange.NONE),
-            open_time=data.get('open_time', datetime.now())
-        )
+        with self.lock:
+            self.position_id=data.get('position_id', 0),
+            self.exchange_id=data.get('exchange_id', ''),
+            self.symbol_id=data.get('symbol_id', ''),
+            self.spot_inst_id=data.get('spot_inst_id', ''),
+            self.swap_inst_id=data.get('swap_inst_id', ''),
+            self.swap_contract_size=data.get('swap_contract_size', 0.0),
+            self.arbitrage_position=data.get('arbitrage_position', 0.0),
+            self.spot_position=data.get('spot_position', 0.0),
+            self.swap_position=data.get('swap_position', 0.0),
+            self.status=data.get('status', '')
         
-        return position
    
+   
+    def to_dict(self) -> Dict:
+        """将 FundingRateArbitragePosition 对象转换为字典"""
+        with self.lock:
+            return {
+                'position_id': self.position_id,
+                'exchange_id': self.exchange_id,
+                'symbol_id': self.symbol_id,
+                'spot_inst_id': self.spot_inst_id,
+                'swap_inst_id': self.swap_inst_id,
+                'swap_contract_size': self.swap_contract_size,
+                'arbitrage_position': self.arbitrage_position,
+                'spot_position': self.spot_position,
+                'swap_position': self.swap_position,
+                'status': self.status,
+                'open_time': self.open_time,
+                'open_basis': self.open_basis,
+                'total_funding_collected': self.total_funding_collected,
+                'close_time': self.close_time,
+                'close_basis': self.close_basis,
+                'total_pnl': self.total_pnl,
+                'update_time': self.update_time
+            }

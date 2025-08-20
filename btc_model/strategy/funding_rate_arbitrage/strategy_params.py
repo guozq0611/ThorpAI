@@ -5,11 +5,14 @@ class CommonParams(NamedTuple):
     """
     通用参数
     """
-    total_capital_limit_usd: float = 100  # 策略总资金限制(USD/USDT)
+    total_capital_limit_usd: float = 300  # 策略总资金限制(USD/USDT)
+    max_concurrent_positions: int = 3  # 最大同时活跃套利头寸数量
+    amount_per_position: float = 100  # 每个套利头寸的资金量
+
     min_annualized_funding_rate: float = 0.15  # 最小开仓预测年化资金费率 
     min_basis_for_open: float = 0.0  # 最小开仓实时基差 
     max_acceptable_basis: float = 0.002  # 最大可接受实时基差 
-    max_concurrent_positions: int = 5  # 最大同时活跃套利头寸数量
+    max_concurrent_positions: int = 1  # 最大同时活跃套利头寸数量
     min_position_size_usd: float = 100  # 最小开仓名义价值 (USD/USDT)
     max_position_size_usd: float = 1000  # 最大开仓名义价值 (USD/USDT)
     funding_rate_close_threshold: float = 0.05  # 平仓触发的年化资金费率 
@@ -40,6 +43,11 @@ class ExecutionParams(NamedTuple):
     """
     执行参数
     """
+    order_timeout: int = 10  # 订单超时时间 (秒)
+    retry_times: int = 3  # 重试次数
+    order_imbalance_threshold: float = 10  # 残腿阈值，单位为USDT
+    order_chase_times: int = 3  # 追单次数
+    imbalance_adjust_times: int = 5  # 残腿调整次数
     spot_td_mode: str = "cash"  # 现货交易模式 (通常是cash)
     swap_td_mode: str = "isolated"  # 永续合约交易模式 (cross 或 isolated)
     spot_order_type_open: str = "market"  # 现货开仓订单类型 (market, limit)
