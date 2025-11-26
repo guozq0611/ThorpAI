@@ -259,6 +259,30 @@ class PerformanceUtil(object):
 
         return yearly_sum
 
+    def return_by_month(self):
+        """
+        计算逐月的回报（优化版）
+        @return: 包含年月和对应累计收益的DataFrame
+        """
+        # 创建包含日期和收益的DataFrame
+        date_return = pd.DataFrame({
+            'date': self.date[1:],
+            'return': self.returns
+        })
+        
+        # 将日期转换为datetime类型
+        date_return['date'] = pd.to_datetime(date_return['date'])
+        
+        # 提取年月信息（格式为"YYYY-MM"）
+        date_return['year_month'] = date_return['date'].dt.strftime('%Y-%m')
+        
+        # 按年月分组并计算累计收益
+        monthly_sum = date_return.groupby('year_month')['return'].sum().reset_index()
+        monthly_sum.columns = ['year_month', 'monthly_return']
+        
+        return monthly_sum
+    
+    
 
     def sharpe_ratio_by_year(self):
         """
